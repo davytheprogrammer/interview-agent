@@ -1,0 +1,11 @@
+#!/usr/bin/python3
+import subprocess
+import sys
+import time
+
+for sentence in ("what is your name", "why do you want this job"):
+    speech = subprocess.check_output(["espeak-ng", "--stdout", sentence])
+    pcm = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"], input=speech, stdout=subprocess.PIPE, check=True).stdout
+    sys.stdout.buffer.write(pcm + b"\0" * 96000)
+    sys.stdout.buffer.flush()
+time.sleep(45)

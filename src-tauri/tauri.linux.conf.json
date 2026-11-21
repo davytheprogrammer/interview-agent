@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "targets": ["deb"],
+    "resources": {
+      "../resources/models/": "speech/models/",
+      "../resources/linux/site-packages/": "speech/python/",
+      "../scripts/transcribe.py": "speech/scripts/transcribe.py",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../LICENSES/": "licenses/"
+    },
+    "linux": { "deb": { "depends": ["python3.10", "pulseaudio-utils", "libstdc++6", "libgcc-s1"] } }
+  }
+}
