@@ -10,7 +10,9 @@ The Meeting and Coding microphone flows stream audio to Meta Muse Voice Transcri
 
 Meta and text-provider credentials are stored in the operating system credential store when available and are not written to the session database. The Meta key is used for Muse image analysis and live transcription. The existing text assistant key is used for coding text questions and meeting suggestions. Audio capture requires an explicit user action and remains visibly indicated. Privacy stop ends audio capture and cancels pending answer work; data already sent to providers cannot be recalled.
 
-Linux computer audio uses the default PipeWire/PulseAudio output monitor. Windows uses WASAPI loopback for the default speaker and the default microphone for coding. Computer audio includes all sound on the output, including notifications. macOS transcription is not implemented. The Windows capture implementation and Meta account/model access still require verification on a real Windows machine with valid credentials.
+Linux computer audio uses the default PipeWire/PulseAudio output monitor. Windows uses WASAPI loopback for the default speaker and the default microphone for coding. Computer audio includes all sound on the output, including notifications. macOS transcription is not implemented.
+
+The maintainer reports testing the Windows app during Micro1 and Turing interviews with screen sharing enabled. This is a report of that setup, not certification by either service. Screen-share behavior varies by Windows version and sharing application: OS content protection is best effort, and the app may appear in a shared screen or recording.
 
 The window is configured to stay on top. On Windows and macOS the app can request OS content protection, but the effect depends on the OS and sharing app. Linux does not support this request through the current window library. Do not assume capture exclusion or invisibility; verify the actual setup.
 
