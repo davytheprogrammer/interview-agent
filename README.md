@@ -1,8 +1,8 @@
-# Pelt Desktop
+# Interview Agent
 
-**Pelt** is a cross-platform AI meeting, coding, and screenshot assistant for Linux and Windows. It combines continuous speech transcription, concise meeting suggestions, coding help, and screenshot analysis in a lightweight desktop app.
+**Interview Agent** is a cross-platform AI interview and meeting assistant for Linux and Windows. It combines continuous speech transcription, concise response suggestions, coding help, and screenshot analysis in a lightweight desktop app.
 
-![Pelt Desktop running on Linux](docs/screenshots/pelt-desktop-linux.png)
+![Interview Agent running on Linux](docs/screenshots/pelt-desktop-linux.png)
 
 Live Companion is a floating meeting and coding assistant built with Tauri 2, Rust, React, and TypeScript. Start the desktop app with `npm install` and `npm run tauri dev` after installing Tauri prerequisites.
 
