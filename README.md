@@ -41,8 +41,8 @@ Choose your preferred LLM provider directly from Settings with built-in round-tr
 
 ### Windows (x64)
 Download the latest binaries from the [**GitHub Releases**](https://github.com/davytheprogrammer/interview-agent/releases/latest):
-- **Installer (Recommended):** [`Live.Companion_0.1.0_x64-setup.exe`](https://github.com/davytheprogrammer/interview-agent/releases/download/v0.1.0-windows/Live.Companion_0.1.0_x64-setup.exe)
-- **Portable Binary:** [`LiveCompanion.exe`](https://github.com/davytheprogrammer/interview-agent/releases/download/v0.1.0-windows/LiveCompanion.exe)
+- **Installer (Recommended):** [`Live.Companion_0.2.0_x64-setup.exe`](https://github.com/davytheprogrammer/interview-agent/releases/download/v0.2.0-windows/Live.Companion_0.2.0_x64-setup.exe)
+- **Portable Binary:** [`LiveCompanion.exe`](https://github.com/davytheprogrammer/interview-agent/releases/download/v0.2.0-windows/LiveCompanion.exe)
 
 ---
 
