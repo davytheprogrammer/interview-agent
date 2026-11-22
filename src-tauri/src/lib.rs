@@ -50,6 +50,18 @@ impl MicrophonePermission {
 }
 
 #[tauri::command]
+fn resize_window(window: tauri::WebviewWindow, landscape: bool) -> Result<(), String> {
+    if landscape {
+        // Wide landscape mode right beneath the camera: 800px wide x 340px high
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 840.0, height: 350.0 }));
+    } else {
+        // Standard compact portrait companion: 440px wide x 680px high
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 440.0, height: 680.0 }));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn arm_microphone_test(window: tauri::WebviewWindow, permission: State<'_, MicrophonePermission>) -> Result<(), String> {
  if window.label() != "main" { return Err("Microphone access is unavailable in this window.".into()); }
  *permission.0.lock().map_err(|_| "Microphone permission unavailable.")? = Some(Instant::now() + Duration::from_secs(30));
@@ -197,7 +209,7 @@ pub fn run() {
   std::fs::create_dir_all(&path)?;
   app.manage(Store::open(&path.join("sessions.sqlite3")).map_err(std::io::Error::other)?);
   Ok(())
- }).invoke_handler(tauri::generate_handler![capture_screen_region,capture_protection_status,set_capture_protection,ensure_capture_protection,transcription::start_transcription,transcription::stop_transcription,test_native_microphone,arm_microphone_test,disarm_microphone_test,provider::save_api_key,provider::has_api_key,provider::delete_api_key,provider::save_meta_api_key,provider::has_meta_api_key,provider::delete_meta_api_key,provider::analyze_image,provider::ask_nvidia,system_audio_availability,test_system_audio_access,history_enabled,set_history,list_sessions,save_session,delete_session,delete_all_data])
+ }).invoke_handler(tauri::generate_handler![resize_window,capture_screen_region,capture_protection_status,set_capture_protection,ensure_capture_protection,transcription::start_transcription,transcription::stop_transcription,test_native_microphone,arm_microphone_test,disarm_microphone_test,provider::save_api_key,provider::has_api_key,provider::delete_api_key,provider::save_meta_api_key,provider::has_meta_api_key,provider::delete_meta_api_key,provider::save_provider_key,provider::has_provider_key,provider::set_active_provider,provider::get_active_provider,provider::analyze_image,provider::ask_nvidia,system_audio_availability,test_system_audio_access,history_enabled,set_history,list_sessions,save_session,delete_session,delete_all_data])
  .run(tauri::generate_context!()).expect("failed to run Live Companion");
 }
 

@@ -30,16 +30,16 @@ async def run(source):
     send('started')
     uri='wss://api.meta.ai/v1/asr/realtime'
     async with websockets.connect(uri,open_timeout=20,ping_interval=20) as ws:
-        await ws.send(json.dumps({'authorization':{'accessToken':'Bearer '+key},'model':'muse-voice-transcribe-1.0','mode':'ENDPOINTING','audioEncoding':'PCM_16KHZ','partialMode':'CUMULATIVE','emitAudioProgress':False}))
+        await ws.send(json.dumps({'authorization':{'accessToken':'Bearer '+key},'model':'muse-voice-transcribe-1.0','mode':'ENDPOINTING','endpointingConfig':{'silenceDurationMs':500},'audioEncoding':'PCM_16KHZ','partialMode':'CUMULATIVE','emitAudioProgress':False}))
         ack=json.loads(await asyncio.wait_for(ws.recv(),timeout=10))
         if 'sessionId' not in ack: raise RuntimeError('Muse Voice Transcribe handshake failed.')
         send('ready')
         async def audio_sender():
             while not stop.is_set():
-                data=await asyncio.to_thread(capture.stdout.read,2560)
+                data=await asyncio.to_thread(capture.stdout.read,1024)
                 if not data: break
                 await ws.send(data)
-                await asyncio.sleep(0.075)
+                await asyncio.sleep(0.02)
             await ws.send(json.dumps({'type':'endStream'}))
         sender=asyncio.create_task(audio_sender())
         try:

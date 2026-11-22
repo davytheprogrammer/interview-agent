@@ -5,3 +5,16 @@
 .status-dot.live{background:#ff6a6a;box-shadow:0 0 0 3px #ff6a6a33}
 .setup-card input[type="checkbox"]{width:auto;margin-right:7px}
 .screenshot-card{margin-top:18px;padding:14px;background:#20222a;border:1px solid #363842;border-radius:12px}.screenshot-card label{margin-top:0}.screenshot-card textarea{margin:0 0 10px}.screenshot-actions{display:flex;align-items:center;gap:12px}.screenshot-actions .ask{flex:1;width:auto;align-items:center}.screenshot-actions input[type=file]{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.screenshot-actions label.context-toggle{cursor:pointer;margin:0}.image-result{margin-top:14px}.image-result img{display:block;width:100%;max-height:230px;object-fit:contain;background:#14151a;border:1px solid #393b46;border-radius:9px}.image-result .callout{margin-top:10px}
+
+/* Teleprompter Landscape Layout */
+.meeting-landscape{padding:14px 20px;display:flex;flex-direction:column;justify-content:center}
+.teleprompter-callout{background:#1a1c24;border:2px solid #4f46e5;border-radius:12px;padding:16px 20px;box-shadow:0 8px 24px rgba(0,0,0,0.5)}
+.teleprompter-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px}
+.teleprompter-badge{font-size:11px;font-weight:800;color:#818cf8;letter-spacing:.08em;background:#312e81;padding:3px 8px;border-radius:4px}
+.teleprompter-status{font-size:12px;color:#a5b4fc;font-style:italic}
+.listen-pill{background:#4f46e5;color:#fff;border:0;border-radius:20px;padding:6px 14px;font-size:12px;font-weight:700}
+.listen-pill.active{background:#dc2626}
+.teleprompter-text{font-size:16px;line-height:1.55;color:#f8fafc;font-weight:500;min-height:90px;max-height:150px;overflow-y:auto;white-space:pre-wrap}
+.teleprompter-placeholder{color:#64748b;font-size:14px;font-style:italic}
+.teleprompter-heard{margin-top:12px;padding-top:10px;border-top:1px solid #2e303d;font-size:12px;color:#94a3b8}
+.teleprompter-heard strong{color:#cbd5e1}

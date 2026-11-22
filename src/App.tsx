@@ -21,7 +21,61 @@ function App() {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [audioCheck, setAudioCheck] = useState('');
+  const [activeProvider, setActiveProvider] = useState('gemini');
+  const [providerKey, setProviderKey] = useState('');
+  const [hasProviderKeyMap, setHasProviderKeyMap] = useState<Record<string, boolean>>({});
+
+  const refreshProviderStatus = async () => {
+    try {
+      const active = await invoke<string>('get_active_provider');
+      setActiveProvider(active);
+      const providers = ['gemini', 'together', 'rax', 'meta', 'nvidia'];
+      const map: Record<string, boolean> = {};
+      for (const p of providers) {
+        map[p] = await invoke<boolean>('has_provider_key', { provider: p });
+      }
+      setHasProviderKeyMap(map);
+    } catch {}
+  };
+  useEffect(() => { void refreshProviderStatus(); }, []);
+
+  const selectProvider = async (p: string) => {
+    setActiveProvider(p);
+    try {
+      await invoke('set_active_provider', { provider: p });
+      setMessage(`Switched AI provider to ${p.toUpperCase()}`);
+    } catch(e) {
+      setMessage(String(e));
+    }
+  };
+
+  const saveSelectedKey = async () => {
+    try {
+      await invoke('save_provider_key', { provider: activeProvider, key: providerKey });
+      setProviderKey('');
+      await refreshProviderStatus();
+      setMessage(`${activeProvider.toUpperCase()} key saved securely!`);
+    } catch(e) {
+      setMessage(String(e));
+    }
+  };
   const [captureProtection, setCaptureProtection] = useState<{supported:boolean;requested:boolean;description:string}|null>(null);
+  const toggleOrientation = async (landscape: boolean) => {
+    try {
+      await invoke('resize_window', { landscape });
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (showSettings) {
+      void toggleOrientation(false);
+    } else if (tab === 'meeting') {
+      void toggleOrientation(true);
+    } else {
+      void toggleOrientation(false);
+    }
+  }, [tab, showSettings]);
+
   const refreshProtection = () => invoke<{supported:boolean;requested:boolean;description:string}>('capture_protection_status').then(setCaptureProtection).catch(() => setCaptureProtection({supported:false,requested:false,description:'Screen-share protection status is unavailable.'}));
   useEffect(() => { void refreshProtection(); }, []);
   const changeProtection = async (enabled:boolean) => { try { await invoke('set_capture_protection', {enabled}); await refreshProtection(); } catch(e) { setMessage(String(e)); } };
@@ -30,12 +84,11 @@ function App() {
   const [captureMode, setCaptureMode] = useState<'microphone'|'computer'>('microphone');
   const [meetingSuggestion, setMeetingSuggestion] = useState('');
   const [meetingText, setMeetingText] = useState('');
-  const [answeredUtterance, setAnsweredUtterance] = useState('');
   const [meetingProgress, setMeetingProgress] = useState('Waiting for speech');
   const [transcriptionReady, setTranscriptionReady] = useState(true);
   const [partial, setPartial] = useState('');
-  useEffect(() => { let disposed = false; let unlisten: (() => void) | undefined; let unlistenAnswer: (() => void) | undefined; void Promise.all([listen<{event:string;text:string;mode:string}>('microphone-transcription', ({payload}) => { if (disposed) return; if (payload.event === 'started') { setRecording(old => old === 'stopping' ? old : 'recording'); if (payload.mode === 'computer') setMeetingProgress('Listening for speech'); } if (payload.event === 'ready' && payload.mode === 'computer') setMeetingProgress('Muse is listening for speech turns'); if (payload.event === 'partial') { setPartial(payload.text); if (payload.mode === 'computer' && payload.text) setMeetingProgress('Speech detected — Muse is preparing the turn'); } if (payload.event === 'turn_complete') { if(payload.mode==='microphone') setQuestion(old=>`${old}${old.trim()?' ':''}${payload.text}`); else setMeetingText(payload.text); setPartial(''); } if (payload.event === 'final') { if (payload.mode === 'microphone') setQuestion(old => `${old}${old.trim() ? ' ' : ''}${payload.text}`); else setMeetingText(payload.text); setPartial(''); } if (payload.event === 'error') { setMessage(payload.text); if (payload.mode === 'computer') setMeetingProgress('Audio error'); } if (payload.event === 'ended') { setRecording('idle'); setPartial(''); if (payload.mode === 'computer') setMeetingProgress('Listening stopped'); } }),listen<{event:string;text:string;utterance?:string}>('meeting-suggestion', ({payload}) => { if (disposed) return; if (payload.event === 'buffering') { setMeetingText(payload.text); setMeetingProgress('Muse completed a speech turn'); } if (payload.event === 'processing') { setMeetingProgress('Preparing a draft…'); setMessage(''); } if (payload.event === 'answer') { setMeetingSuggestion(payload.text); setAnsweredUtterance(payload.utterance || ''); setMeetingProgress('Draft ready — still listening'); } if (payload.event === 'no_question') setMeetingProgress('Listening for more speech'); if (payload.event === 'error') { setMessage(payload.text); setMeetingProgress('AI request failed — still listening'); } })]).then(([a,b]) => { if (disposed) { a(); b(); } else { unlisten = a; unlistenAnswer = b; setTranscriptionReady(true); } }).catch(() => setMessage('Could not receive transcription events.')); return () => { disposed = true; unlisten?.(); unlistenAnswer?.(); void invoke('stop_transcription').catch(() => {}); }; }, []);
-  const startRecording = async (mode: 'microphone'|'computer') => { setMessage(''); setPartial(''); setCaptureMode(mode); if (mode === 'computer') { setMeetingText(''); setMeetingSuggestion(''); setAnsweredUtterance(''); setMeetingProgress('Starting audio…'); try { await invoke('ensure_capture_protection'); } catch (e) { /* non-critical, continue anyway */ } } setRecording('starting'); try { await invoke('start_transcription', {mode}); } catch (e) { setRecording('idle'); setMessage(String(e)); } };
+  useEffect(() => { let disposed = false; let unlisten: (() => void) | undefined; let unlistenAnswer: (() => void) | undefined; void Promise.all([listen<{event:string;text:string;mode:string}>('microphone-transcription', ({payload}) => { if (disposed) return; if (payload.event === 'started') { setRecording(old => old === 'stopping' ? old : 'recording'); if (payload.mode === 'computer') setMeetingProgress('Listening for speech'); } if (payload.event === 'ready' && payload.mode === 'computer') setMeetingProgress('Muse is listening for speech turns'); if (payload.event === 'partial') { setPartial(payload.text); if (payload.mode === 'computer' && payload.text) setMeetingProgress('Speech detected — Muse is preparing the turn'); } if (payload.event === 'turn_complete') { if(payload.mode==='microphone') setQuestion(old=>`${old}${old.trim()?' ':''}${payload.text}`); else setMeetingText(payload.text); setPartial(''); } if (payload.event === 'final') { if (payload.mode === 'microphone') setQuestion(old => `${old}${old.trim() ? ' ' : ''}${payload.text}`); else setMeetingText(payload.text); setPartial(''); } if (payload.event === 'error') { setMessage(payload.text); if (payload.mode === 'computer') setMeetingProgress('Audio error'); } if (payload.event === 'ended') { setRecording('idle'); setPartial(''); if (payload.mode === 'computer') setMeetingProgress('Listening stopped'); } }),listen<{event:string;text:string;utterance?:string}>('meeting-suggestion', ({payload}) => { if (disposed) return; if (payload.event === 'buffering') { setMeetingText(payload.text); setMeetingProgress('Muse completed a speech turn'); } if (payload.event === 'processing') { setMeetingProgress('Preparing a draft…'); setMessage(''); } if (payload.event === 'answer') { setMeetingSuggestion(payload.text); setMeetingProgress('Draft ready — still listening'); } if (payload.event === 'no_question') setMeetingProgress('Listening for more speech'); if (payload.event === 'error') { setMessage(payload.text); setMeetingProgress('AI request failed — still listening'); } })]).then(([a,b]) => { if (disposed) { a(); b(); } else { unlisten = a; unlistenAnswer = b; setTranscriptionReady(true); } }).catch(() => setMessage('Could not receive transcription events.')); return () => { disposed = true; unlisten?.(); unlistenAnswer?.(); void invoke('stop_transcription').catch(() => {}); }; }, []);
+  const startRecording = async (mode: 'microphone'|'computer') => { setMessage(''); setPartial(''); setCaptureMode(mode); if (mode === 'computer') { setMeetingText(''); setMeetingSuggestion(''); setMeetingProgress('Starting audio…'); try { await invoke('ensure_capture_protection'); } catch (e) { /* non-critical, continue anyway */ } } setRecording('starting'); try { await invoke('start_transcription', {mode}); } catch (e) { setRecording('idle'); setMessage(String(e)); } };
   const stopRecording = async () => { setRecording('stopping'); try { await invoke('stop_transcription'); } catch (e) { setMessage(String(e)); } };
   const testComputerAudio = async () => { setCheckingAudio(true); setAudioCheck('Checking computer-audio access…'); try { setAudioCheck(await invoke<string>('test_system_audio_access')); } catch(e) { setAudioCheck(String(e)); } finally { setCheckingAudio(false); } };
   const testMicrophone = async () => { setCheckingAudio(true); setAudioCheck('Testing microphone access…'); try { if (audio?.native_microphone) { setAudioCheck(await invoke<string>('test_native_microphone')); } else { if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access is unavailable in this desktop webview. Check system permissions and your audio device.'); await invoke('arm_microphone_test'); const stream = await navigator.mediaDevices.getUserMedia({audio:true,video:false}); const device = stream.getAudioTracks()[0]?.label || 'Default microphone'; stream.getTracks().forEach(track => track.stop()); setAudioCheck(`Microphone access granted (${device}). Capture stopped; no audio was saved. Transcription is not connected.`); } } catch(e) { const error = e as Error; setAudioCheck(error.name === 'NotAllowedError' ? 'Microphone access was denied by the webview or operating system. Check the system audio permissions and try again.' : error.name === 'NotFoundError' ? 'No microphone found. Connect one and try again.' : `Microphone access failed: ${error.message || String(e)}`); } finally { await invoke('disarm_microphone_test').catch(() => {}); setCheckingAudio(false); } };
@@ -60,8 +113,45 @@ function App() {
     </header>
     {showSettings ? <section className="settings">
       <div className="section-heading"><div><span className="eyebrow">SETUP</span><h1>Connect your assistant</h1></div><button className="text-button" onClick={() => setShowSettings(false)}>Done</button></div>
+      <div className="setup-card" style={{border: '1px solid #3b82f6'}}><span className="setup-icon">AI</span><div>
+        <strong>Choose AI Provider (LLM)</strong>
+        <p>Select which AI engine generates interview answers. Gemini & Together are ultra-fast (~200ms latency).</p>
+        <div style={{display: 'flex', gap: '8px', margin: '8px 0', flexWrap: 'wrap'}}>
+          {['gemini', 'together', 'rax', 'meta', 'nvidia'].map(p => (
+            <button key={p} style={{background: activeProvider === p ? '#3b82f6' : '#27272a', color: '#fff', padding: '4px 10px', fontSize: '13px', borderRadius: '4px', textTransform: 'uppercase'}} onClick={() => void selectProvider(p)}>
+              {p} {hasProviderKeyMap[p] ? '✓' : ''}
+            </button>
+          ))}
+        </div>
+        <label htmlFor="provider-key">{activeProvider.toUpperCase()} API Key</label>
+        <input id="provider-key" type="password" autoComplete="off" value={providerKey} onChange={e => setProviderKey(e.target.value)} placeholder={hasProviderKeyMap[activeProvider] ? `${activeProvider.toUpperCase()} Key Saved` : `Enter ${activeProvider.toUpperCase()} Key`}/>
+        <div className="actions">
+          <button onClick={() => void saveSelectedKey()} disabled={!providerKey.trim()}>Save {activeProvider.toUpperCase()} Key</button>
+          <button onClick={async () => {
+            setMessage(`Testing ${activeProvider.toUpperCase()} latency...`);
+            const start = performance.now();
+            try {
+              await invoke('ask_nvidia', { question: 'Say Hello in one word.', context: '', mode: 'meeting' });
+              const ms = Math.round(performance.now() - start);
+              setMessage(`⚡ ${activeProvider.toUpperCase()} round-trip latency: ${ms}ms!`);
+            } catch(e) {
+              setMessage(`Connection test error: ${String(e)}`);
+            }
+          }} disabled={!hasProviderKeyMap[activeProvider]}>⚡ Test {activeProvider.toUpperCase()} Latency</button>
+        </div>
+      </div><span className="badge">{hasProviderKeyMap[activeProvider] ? 'Ready' : 'Needs Key'}</span></div>
       <div className="setup-card"><span className="setup-icon">01</span><div><strong>NVIDIA AI</strong><p>integrate.api.nvidia.com · poolside/laguna-xs-2.1</p><label htmlFor="api-key">NVIDIA API key</label><input id="api-key" type="password" autoComplete="off" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={hasKey ? 'Key saved' : 'Enter your API key'}/><div className="actions"><button onClick={() => void saveKey()} disabled={!apiKey.trim() || busy}>Save key</button><button onClick={() => void ask(true)} disabled={!hasKey || busy}>Test connection</button>{hasKey && <button disabled={busy} onClick={async () => { try { await invoke('delete_api_key'); await refreshKey(); setMessage('Key deleted.'); } catch(e) { setMessage(String(e)); } }}>Delete key</button>}</div></div><span className="badge">{hasKey ? 'Key saved' : 'Not connected'}</span></div>
-      <div className="setup-card"><span className="setup-icon">02</span><div><strong>Meta Muse</strong><p>Muse Spark 1.3 Contributor for screenshot analysis · Muse Voice Transcribe for live speech turns</p><label htmlFor="meta-api-key">Meta Model API key</label><input id="meta-api-key" type="password" autoComplete="off" value={metaKey} onChange={e=>setMetaKey(e.target.value)} placeholder={hasMetaKey?'Key saved':'Enter Meta API key'}/><div className="actions"><button onClick={()=>void saveMetaKey()} disabled={!metaKey.trim()}>Save Meta key</button>{hasMetaKey && <button onClick={async()=>{try{await invoke('delete_meta_api_key');await refreshMetaKey();setMessage('Meta key deleted.')}catch(e){setMessage(String(e))}}}>Delete Meta key</button>}</div><p>Keys are stored in the operating system credential store. Screenshots are sent to Meta only when you choose an image to analyze.</p></div><span className="badge">{hasMetaKey?'Key saved':'Not connected'}</span></div>
+      <div className="setup-card"><span className="setup-icon">02</span><div><strong>Meta Muse</strong><p>Muse Spark 1.3 Contributor for interview answers & vision · Muse Voice Transcribe for live speech</p><label htmlFor="meta-api-key">Meta Model API key</label><input id="meta-api-key" type="password" autoComplete="off" value={metaKey} onChange={e=>setMetaKey(e.target.value)} placeholder={hasMetaKey?'Key saved':'Enter Meta API key'}/><div className="actions"><button onClick={()=>void saveMetaKey()} disabled={!metaKey.trim()}>Save Meta key</button><button onClick={async()=>{
+        setMessage('Pinging Meta Muse API...');
+        const start = performance.now();
+        try {
+          await invoke('ask_nvidia', { question: 'Ping', context: '', mode: 'meeting' });
+          const ms = Math.round(performance.now() - start);
+          setMessage(`⚡ Meta Muse Latency: ${ms}ms round-trip`);
+        } catch(e) {
+          setMessage(`Meta ping failed: ${String(e)}`);
+        }
+      }} disabled={!hasMetaKey}>⚡ Test Latency</button>{hasMetaKey && <button onClick={async()=>{try{await invoke('delete_meta_api_key');await refreshMetaKey();setMessage('Meta key deleted.')}catch(e){setMessage(String(e))}}}>Delete Meta key</button>}</div><p>Keys are stored in the operating system credential store.</p></div><span className="badge">{hasMetaKey?'Key saved':'Not connected'}</span></div>
       <div className="setup-card"><span className="setup-icon">03</span><div><strong>Audio access</strong><p>{audio?.description ?? 'Checking available sources…'} Test computer audio or request microphone access. Each test stops immediately and saves no audio.</p><div className="actions"><button onClick={() => void refreshAudio()} disabled={checkingAudio || recording !== 'idle'}>Refresh devices</button><button onClick={() => void testComputerAudio()} disabled={!audio?.available || checkingAudio || recording !== 'idle'}>Test computer audio</button><button onClick={() => void testMicrophone()} disabled={checkingAudio || recording !== 'idle'}>Test microphone</button></div>{audioCheck && <p role="status">{audioCheck}</p>}<p>Muse Voice Transcribe receives live audio during capture and detects completed speech turns. Completed meeting turns are sent to the text assistant for suggestions.</p></div><span className="badge">{audio?.available ? 'Source found' : 'Unavailable'}</span></div>
       <div className="setup-card"><span className="setup-icon">03</span><div><strong>Screen sharing</strong><p>{captureProtection?.description ?? 'Checking screen-share protection…'}</p>{captureProtection?.supported && <label className="capture-toggle"><input type="checkbox" checked={captureProtection.requested} onChange={e => void changeProtection(e.target.checked)}/><span className="switch-track"><span className="switch-thumb"></span></span><span className="switch-label">Request OS capture exclusion</span></label>}</div><span className="badge">{captureProtection?.supported ? (captureProtection.requested ? 'Requested' : 'Off') : 'Unavailable'}</span></div>
       <p className="privacy">While capture is active, live audio is streamed to Meta for transcription; completed meeting speech is sent to your configured text assistant. Images are sent to Meta only when you select one for analysis. No raw audio is saved.</p>{recording !== 'idle' && <button className="listen" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>■ Stop capture</button>}{message && <p role="status" className="message">{message}</p>}
@@ -69,12 +159,27 @@ function App() {
       <div className="statusline" role="status" aria-live="polite"><span className={'status-dot ' + (recording === 'recording' ? 'live' : '')}/> <span>{recording === 'recording' ? (captureMode === 'computer' ? 'Listening to computer audio' : 'Microphone recording') : recording === 'starting' ? 'Starting audio…' : recording === 'stopping' ? 'Stopping audio…' : 'Not listening'}</span>{recording !== 'idle' ? <button className="text-button" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>Privacy stop</button> : <button className="text-button" onClick={() => setShowSettings(true)}>Set up audio & AI →</button>}</div>
       <nav className="tabs" aria-label="Assistant area"><button className={tab === 'meeting' ? 'selected' : ''} aria-current={tab === 'meeting' ? 'page' : undefined} onClick={() => setTab('meeting')}>◉ &nbsp; Meeting</button><button className={tab === 'coding' ? 'selected' : ''} aria-current={tab === 'coding' ? 'page' : undefined} onClick={() => setTab('coding')}>⌘ &nbsp; Coding</button><button className={tab === 'screenshot' ? 'selected' : ''} aria-current={tab === 'screenshot' ? 'page' : undefined} onClick={() => setTab('screenshot')}>▧ &nbsp; Screenshot</button></nav>
       {tab === 'meeting' ?
-      <section className="body">
-        {recording === 'idle' ? <button className="listen" disabled={!audio?.available || !hasKey || !hasMetaKey || !transcriptionReady} onClick={() => void startRecording('computer')}>▶ &nbsp; Start listening to computer audio</button> : <button className="listen" disabled={recording === 'stopping'} onClick={() => void stopRecording()}>■ &nbsp; {recording === 'stopping' ? 'Stopping…' : 'Privacy stop'}</button>}{captureProtection?.supported && recording === 'recording' && captureProtection.requested && <p className="source screen-share-active" style={{color: '#4ade80', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px'}}><span style={{fontSize: '14px'}}>🔒</span> Screen share protection active</p>}
-        <p className="source">{audio?.available ? 'Uses all sound on your computer output, including notifications; not your microphone.' : audio?.description ?? 'Checking computer audio…'} Audio streams to Meta for live transcription. Completed speech turns are sent to the text assistant for short suggestions. {hasMetaKey ? '' : 'Add your Meta key in settings first.'}</p>
-        <span className="eyebrow">MEETING ASSISTANT</span><h1>Answers when<br/><em>you need them.</em></h1><p className="intro">Completed speech turns are detected by Muse Voice Transcribe.</p>
-        {message && <p role="alert" className="message">{message}</p>}<p className="source" role="status">{meetingProgress}</p>{(partial || meetingText) && captureMode === 'computer' && <p className="source">Latest heard: {partial || meetingText}</p>}
-        <div className="callout"><span aria-hidden="true">✳</span><p><strong>{meetingSuggestion ? 'AI-generated draft' : 'Suggestions appear here'}</strong>{answeredUtterance && <><br/><small>Responding to: {answeredUtterance}</small></>}<br/>{meetingSuggestion || 'Start listening during a permitted meeting. Suggestions may be inaccurate; review them before speaking.'}</p></div>
+      <section className="body meeting-landscape">
+        {/* Top-level prominent suggestion banner right at eye level beneath the camera */}
+        <div className="teleprompter-callout">
+          <div className="teleprompter-header">
+            <span className="teleprompter-badge">AI REAL-TIME DRAFT</span>
+            <span className="teleprompter-status">{meetingProgress}</span>
+            {recording === 'idle' ? (
+              <button className="listen-pill" disabled={!audio?.available || !hasMetaKey} onClick={() => void startRecording('computer')}>▶ Start Listening</button>
+            ) : (
+              <button className="listen-pill active" onClick={() => void stopRecording()}>■ Stop Capture</button>
+            )}
+          </div>
+          <div className="teleprompter-text">
+            {meetingSuggestion || <span className="teleprompter-placeholder">Listening for interviewer questions... Suggested answers appear here directly below your webcam so your eye contact remains natural.</span>}
+          </div>
+          {(partial || meetingText) && (
+            <div className="teleprompter-heard">
+              <strong>Heard:</strong> {partial || meetingText}
+            </div>
+          )}
+        </div>
       </section> : tab === 'coding' ? <section className="body">
         <span className="eyebrow">CODING ASSISTANT</span><h1>Ask about<br/><em>your code.</em></h1><p className="intro">Type a question or record one using your microphone. Speech is transcribed on this computer.</p>
         <label htmlFor="question">Coding question</label><textarea id="question" value={question} onChange={e => setQuestion(e.target.value)} placeholder="How do I fix this error?" rows={3}/>
