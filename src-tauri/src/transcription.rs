@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, io::{BufRead, BufReader, Write}, process::{Child, Stdio}, sync::{Arc, Mutex}, thread, time::{Duration, Instant}};
+use std::{collections::VecDeque, io::{BufRead, BufReader, Write}, process::{Child, Stdio}, sync::{Arc, Mutex}, thread, time::Instant};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use tauri::{AppHandle, Emitter, State};
@@ -23,52 +23,13 @@ fn cancel_meeting(inner: &mut Inner) {
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode { Microphone, Computer }
 impl CaptureMode { fn label(self) -> &'static str { if self == Self::Microphone { "microphone" } else { "computer" } } }
-const QUESTION_PAUSE: Duration = Duration::from_secs(5);
-const DRAFT_PAUSE: Duration = Duration::from_secs(4);
-fn current_text(state: &Inner) -> String { format!("{} {}", state.group, state.partial).trim().to_owned() }
-fn note_speech(state: &mut Inner, text: &str, final_segment: bool, now: Instant) -> Result<(), &'static str> {
- let text = text.trim();
- if text.is_empty() {
-  if !final_segment && !state.partial.is_empty() { state.partial.clear(); state.revision = state.revision.wrapping_add(1); state.pending.clear(); if let Some(task) = state.task.take() { task.abort(); } state.busy = false; }
-  return Ok(());
- }
- let before = current_text(state);
- state.last_speech = Some(now);
- if final_segment {
-  if state.group.len() + text.len() + 1 > 16000 { return Err("The current question is too long to process. Stop listening and try a shorter question."); }
-  if !state.group.is_empty() { state.group.push(' '); }
-  state.group.push_str(text);
-  state.partial.clear();
- } else if state.partial == text { return Ok(()); } else { state.partial = text.to_owned(); }
- if current_text(state) == before { return Ok(()); }
- state.revision = state.revision.wrapping_add(1);
- state.pending.clear();
- if let Some(task) = state.task.take() { task.abort(); }
- state.busy = false;
- Ok(())
-}
-fn draft_candidate(state: &mut Inner, now: Instant) -> Option<String> {
- if !state.last_speech.is_some_and(|last| now.saturating_duration_since(last) >= DRAFT_PAUSE) { return None; }
- let text = current_text(state);
- if text.is_empty() || text == state.last_preview { return None; }
- state.last_preview = text.clone();
- Some(text)
-}
 fn remember_question(state: &mut Inner, text: String) {
  if !text.is_empty() {
   state.recent.push_back(text);
   while state.recent.len() > 4 { state.recent.pop_front(); }
  }
 }
-fn take_finished_group(state: &mut Inner, now: Instant) -> Option<String> {
- if current_text(state).is_empty() || !state.last_speech.is_some_and(|last| now.saturating_duration_since(last) > QUESTION_PAUSE) { return None; }
- let text = current_text(state);
- state.last_speech = None;
- state.partial.clear();
- state.last_preview.clear();
- state.group.clear();
- Some(text)
-}
+fn take_finished_group(state: &mut Inner, text: &str) -> Option<String> { let text=text.trim(); if text.is_empty() { return None; } state.last_speech=None; state.partial.clear(); state.last_preview.clear(); state.group.clear(); Some(text.to_owned()) }
 
 fn bounded_text(text: &str, limit: usize) -> String { let mut result = String::new(); for ch in text.trim().chars() { if result.len() + ch.len_utf8() > limit { break; } result.push(ch); } result }
 fn enqueue(state: &mut Inner, text: &str) -> Result<(), &'static str> {
@@ -113,6 +74,7 @@ fn schedule_answer(shared: Arc<Mutex<Inner>>, app: AppHandle) {
  });
  state.task = Some(task);
 }
+fn state_schedule_after_turn(shared:&Arc<Mutex<Inner>>,app:&AppHandle) { let mut should_schedule=false; if let Ok(mut state)=shared.lock() { if state.meeting_active { if let Some(text)=state.recent.back().cloned() { match enqueue(&mut state,&text) { Ok(())=>should_schedule=true, Err(error)=>{let _=app.emit("meeting-suggestion",serde_json::json!({"event":"error","text":error}));} } } } } if should_schedule { schedule_answer(Arc::clone(shared),app.clone()); } }
 
 #[tauri::command]
 pub fn start_transcription(app: AppHandle, state: State<'_, Transcription>, mode: CaptureMode) -> Result<(), String> {
@@ -121,7 +83,8 @@ pub fn start_transcription(app: AppHandle, state: State<'_, Transcription>, mode
  #[cfg(any(target_os = "linux", target_os = "windows"))]
  {
   let runtime = crate::platform::speech_runtime(&app)?;
-  if !runtime.python.is_file() || !runtime.worker.is_file() || !runtime.model.join("am/final.mdl").is_file() { return Err("Local speech model or runtime is missing. Reinstall or check setup instructions.".into()); }
+  if !runtime.python.is_file() || !runtime.worker.is_file() { return Err("Speech runtime is missing. Reinstall or check setup instructions.".into()); }
+  let meta_key=crate::provider::meta_api_key()?;
   if mode == CaptureMode::Computer && !crate::provider::has_api_key()? { return Err("Add your NVIDIA key in settings before starting meeting suggestions.".into()); }
   let mut slot = state.0.lock().map_err(|_| "Transcription is unavailable.")?;
   if slot.child.is_some() { return Err("Audio capture is already active or stopping.".into()); }
@@ -133,28 +96,12 @@ pub fn start_transcription(app: AppHandle, state: State<'_, Transcription>, mode
   };
   #[cfg(target_os = "windows")]
   let source = mode.label().to_owned();
-  let mut child = crate::platform::command(&runtime).arg("-u").arg(&runtime.worker).arg(&runtime.model).arg(source).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_| "Could not start local transcription.")?;
+  let mut worker=crate::platform::command(&runtime); worker.arg("-u").arg(&runtime.worker).arg(source).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).env("META_MODEL_API_KEY",meta_key);
+  let mut child = worker.spawn().map_err(|_| "Could not start Muse Voice Transcribe.")?;
   let stdout = child.stdout.take().ok_or("Could not start transcription output.")?;
   slot.child = Some(child); slot.meeting_active = mode == CaptureMode::Computer; slot.generation = slot.generation.wrapping_add(1); slot.revision = 0; slot.pending.clear(); slot.recent.clear(); slot.group.clear(); slot.partial.clear(); slot.last_preview.clear(); slot.last_speech = None; slot.busy = false; slot.task = None;
   let generation = slot.generation;
   let shared = Arc::clone(&state.0);
-  if mode == CaptureMode::Computer {
-   let timer_shared = Arc::clone(&shared); let timer_app = app.clone();
-   thread::spawn(move || loop {
-    thread::sleep(Duration::from_millis(200));
-    let mut should_schedule = false;
-    if let Ok(mut state) = timer_shared.lock() {
-     if !state.meeting_active || state.generation != generation { break; }
-     let now = Instant::now();
-     if let Some(text) = draft_candidate(&mut state, now) {
-      state.pending.clear();
-      match enqueue(&mut state, &text) { Ok(()) => { should_schedule = true; }, Err(error) => { let _ = timer_app.emit("meeting-suggestion", serde_json::json!({"event":"error", "text":error})); } }
-     }
-     if let Some(text) = take_finished_group(&mut state, now) { remember_question(&mut state, text); }
-    } else { break; }
-    if should_schedule { schedule_answer(Arc::clone(&timer_shared), timer_app.clone()); }
-   });
-  }
   thread::spawn(move || {
    let mut ended = false;
    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -162,13 +109,13 @@ pub fn start_transcription(app: AppHandle, state: State<'_, Transcription>, mode
      let kind = event.get("event").and_then(|v| v.as_str()).unwrap_or("").to_owned();
      if kind == "ended" { ended = true; }
      let mut grouped = None;
-     if mode == CaptureMode::Computer && (kind == "final" || kind == "partial" || kind == "activity") {
+     if mode == CaptureMode::Computer && (kind == "turn_complete" || kind == "partial" || kind == "activity") {
       let text = event.get("text").and_then(|v| v.as_str()).unwrap_or("");
-      if let Ok(mut state) = shared.lock() { if state.meeting_active && state.generation == generation { if kind == "activity" { state.last_speech = Some(Instant::now()); } else if let Err(error) = note_speech(&mut state, text, kind == "final", Instant::now()) { let _ = app.emit("meeting-suggestion", serde_json::json!({"event":"error", "text":error})); } if kind == "final" && !text.trim().is_empty() { grouped = Some(state.group.clone()); } } }
+      if let Ok(mut state) = shared.lock() { if state.meeting_active && state.generation == generation { if kind == "partial" { state.partial=text.to_owned(); } else if kind == "turn_complete" { grouped=take_finished_group(&mut state,text); if let Some(question)=grouped.clone() { remember_question(&mut state,question); state.revision=state.revision.wrapping_add(1); } } } }
      }
      if let Some(object) = event.as_object_mut() { object.insert("mode".into(), mode.label().into()); }
      let _ = app.emit("microphone-transcription", event);
-     if let Some(text) = grouped { let _ = app.emit("meeting-suggestion", serde_json::json!({"event":"buffering", "text":text})); }
+     if let Some(text) = grouped { let _ = app.emit("meeting-suggestion", serde_json::json!({"event":"buffering", "text":text})); state_schedule_after_turn(&shared,&app); }
     }
    }
    if let Ok(mut guard) = shared.lock() { cancel_meeting(&mut guard); if let Some(mut process) = guard.child.take() { let _ = process.wait(); } }
@@ -189,14 +136,9 @@ impl Drop for Transcription { fn drop(&mut self) { if let Ok(mut slot) = self.0.
 
 #[cfg(test)] mod tests {
  use super::*;
- #[test] fn privacy_stop_clears_pending_meeting_text() { let mut state = Inner { meeting_active: true, pending: VecDeque::from(["private speech".into()]), recent: VecDeque::from(["previous".into()]), busy: true, ..Default::default() }; cancel_meeting(&mut state); assert!(!state.meeting_active); assert!(!state.busy); assert!(state.pending.is_empty()); assert!(state.recent.is_empty()); }
- #[test] fn separate_questions_are_processed_in_order_with_recent_context() { let mut state = Inner::default(); enqueue(&mut state,"first question").unwrap(); let (first, context) = next_turn(&mut state).unwrap(); assert_eq!(first,"first question"); assert!(context.is_empty()); remember_question(&mut state,first); enqueue(&mut state,"second question").unwrap(); let (second, context) = next_turn(&mut state).unwrap(); assert_eq!(second,"second question"); assert_eq!(context,"first question"); assert!(next_turn(&mut state).is_none()); }
- #[test] fn queue_is_bounded_and_reports_overflow() { let mut state = Inner::default(); for _ in 0..32 { enqueue(&mut state,"question").unwrap(); } assert!(enqueue(&mut state,"extra").is_err()); assert_eq!(state.pending.len(),32); }
- #[test] fn text_limit_preserves_unicode_boundaries() { let text = "😀".repeat(1000); let bounded = bounded_text(&text,2400); assert_eq!(bounded.len(),2400); }
- #[test] fn pauses_up_to_five_seconds_do_not_split_the_question() { let start = Instant::now(); let mut state = Inner::default(); note_speech(&mut state, "first part", true, start).unwrap(); assert!(take_finished_group(&mut state, start + Duration::from_secs(5)).is_none()); note_speech(&mut state, "second part", true, start + Duration::from_secs(5)).unwrap(); assert!(take_finished_group(&mut state, start + Duration::from_secs(10)).is_none()); assert_eq!(take_finished_group(&mut state, start + Duration::from_millis(10001)).as_deref(), Some("first part second part")); }
- #[test] fn ongoing_partial_speech_extends_the_boundary_and_stop_clears_it() { let start = Instant::now(); let mut state = Inner::default(); note_speech(&mut state, "one", true, start).unwrap(); note_speech(&mut state, "next", false, start + Duration::from_secs(4)).unwrap(); assert!(take_finished_group(&mut state, start + Duration::from_secs(6)).is_none()); cancel_meeting(&mut state); assert!(state.group.is_empty()); assert!(state.last_speech.is_none()); }
- #[test] fn draft_after_four_seconds_updates_after_speech_resumes() { let start = Instant::now(); let mut state = Inner::default(); note_speech(&mut state,"tell me",true,start).unwrap(); assert!(draft_candidate(&mut state,start+Duration::from_millis(3999)).is_none()); assert_eq!(draft_candidate(&mut state,start+Duration::from_secs(4)).as_deref(),Some("tell me")); assert!(draft_candidate(&mut state,start+Duration::from_millis(4500)).is_none()); note_speech(&mut state,"about your experience",true,start+Duration::from_millis(4500)).unwrap(); assert!(take_finished_group(&mut state,start+Duration::from_secs(9)).is_none()); assert_eq!(draft_candidate(&mut state,start+Duration::from_millis(8500)).as_deref(),Some("tell me about your experience")); assert_eq!(take_finished_group(&mut state,start+Duration::from_millis(9501)).as_deref(),Some("tell me about your experience")); }
- #[test] fn finalizing_same_partial_keeps_existing_draft_valid() { let start = Instant::now(); let mut state = Inner::default(); note_speech(&mut state,"hello there",false,start).unwrap(); let revision = state.revision; assert_eq!(draft_candidate(&mut state,start+Duration::from_secs(4)).as_deref(),Some("hello there")); note_speech(&mut state,"hello there",true,start+Duration::from_secs(5)).unwrap(); assert_eq!(state.revision,revision); assert!(draft_candidate(&mut state,start+Duration::from_secs(9)).is_none()); }
- #[test] fn resumed_speech_invalidates_older_draft_and_keeps_one_question() { let start = Instant::now(); let mut state = Inner::default(); note_speech(&mut state,"why did you",true,start).unwrap(); let revision = state.revision; assert_eq!(draft_candidate(&mut state,start+Duration::from_secs(4)).as_deref(),Some("why did you")); note_speech(&mut state,"choose this role",false,start+Duration::from_millis(4500)).unwrap(); assert_ne!(state.revision, revision); assert_eq!(draft_candidate(&mut state,start+Duration::from_millis(8500)).as_deref(),Some("why did you choose this role")); assert_eq!(take_finished_group(&mut state,start+Duration::from_millis(9501)).as_deref(),Some("why did you choose this role")); }
- #[test] #[ignore = "requires saved NVIDIA key and sends two synthetic questions"] fn live_two_turns() { let mut state = Inner::default(); enqueue(&mut state,"What is two plus two?").unwrap(); enqueue(&mut state,"What is three plus three?").unwrap(); for _ in 0..2 { let (text, context) = next_turn(&mut state).unwrap(); let answer = tauri::async_runtime::block_on(ask_nvidia(meeting_question(&text),context,AskMode::Meeting)).expect("Synthetic NVIDIA request failed"); assert!(!answer.trim().is_empty()); assert!(!answer.trim().trim_end_matches('.').eq_ignore_ascii_case("NO_QUESTION")); } }
+ #[test] fn completed_turn_is_used_as_the_boundary_without_silence_timers() { let mut state=Inner::default(); assert_eq!(take_finished_group(&mut state,"Recruiter question."),Some("Recruiter question.".into())); }
+ #[test] fn empty_completed_turn_is_ignored() { let mut state=Inner::default(); assert!(take_finished_group(&mut state,"  ").is_none()); }
+ #[test] fn privacy_stop_clears_pending_meeting_text() { let mut state=Inner { meeting_active:true, pending:VecDeque::from(["private speech".into()]), recent:VecDeque::from(["previous".into()]), busy:true, ..Default::default() }; cancel_meeting(&mut state); assert!(!state.meeting_active); assert!(!state.busy); assert!(state.pending.is_empty()); assert!(state.recent.is_empty()); }
+ #[test] fn context_tracks_previous_completed_turns() { let mut state=Inner::default(); remember_question(&mut state,"first question".into()); enqueue(&mut state,"second question").unwrap(); let (question,context)=next_turn(&mut state).unwrap(); assert_eq!(question,"second question"); assert_eq!(context,"first question"); }
+ #[test] fn provider_errors_are_not_sourced_from_transcript_payloads() { assert!(meeting_question("what happened?").contains("Latest speech")); }
 }

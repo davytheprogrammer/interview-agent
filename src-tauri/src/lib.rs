@@ -23,6 +23,17 @@ fn capture_protection_status(state: State<'_, CaptureProtection>) -> CaptureProt
  }
 }
 #[tauri::command]
+fn ensure_capture_protection(window: tauri::WebviewWindow, state: State<'_, CaptureProtection>) -> Result<(), String> {
+ #[cfg(any(target_os = "windows", target_os = "macos"))]
+ {
+  window.set_content_protected(true).map_err(|_| "Could not request screen-capture exclusion.")?;
+  *state.0.lock().map_err(|_| "Could not update screen-capture exclusion.")? = true;
+  Ok(())
+ }
+ #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+ { let _ = (window, state); Err("Screen-share exclusion is not supported by this app on Linux.".into()) }
+}
+#[tauri::command]
 fn set_capture_protection(window: tauri::WebviewWindow, state: State<'_, CaptureProtection>, enabled: bool) -> Result<(), String> {
  if window.label() != "main" { return Err("Capture protection is unavailable for this window.".into()); }
  #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -51,6 +62,27 @@ fn disarm_microphone_test(permission: State<'_, MicrophonePermission>) {
 
 #[derive(serde::Serialize)]
 struct AudioAvailability { available: bool, description: String, native_microphone: bool }
+
+#[tauri::command]
+async fn capture_screen_region() -> Result<String,String> {
+ #[cfg(target_os="linux")]
+ {
+  tauri::async_runtime::spawn_blocking(|| {
+   use std::{process::{Command,Stdio},time::{SystemTime,UNIX_EPOCH}};
+   let stamp=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"System clock unavailable.")?.as_millis();
+   let path=std::env::temp_dir().join(format!("live-companion-snip-{}-{stamp}.png",std::process::id()));
+   let result=Command::new("import").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(|_|"Region capture needs ImageMagick's `import` utility. Install ImageMagick and try again.")?;
+   if !result.success() { return Err("Screenshot selection was cancelled.".to_string()); }
+   let bytes=std::fs::read(&path).map_err(|_|"Could not read the selected screenshot.")?;
+   let _=std::fs::remove_file(&path);
+   if bytes.is_empty() || bytes.len()>12*1024*1024 { return Err("Selected screenshot is empty or larger than 12 MB.".into()); }
+   use base64::Engine;
+   Ok(format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes)))
+  }).await.map_err(|_|"Screenshot capture failed.")?
+ }
+ #[cfg(not(target_os="linux"))]
+ { Err("Use the image chooser to select a screenshot on this platform.".into()) }
+}
 
 #[cfg(target_os = "linux")]
 fn default_monitor() -> Option<String> {
@@ -165,7 +197,7 @@ pub fn run() {
   std::fs::create_dir_all(&path)?;
   app.manage(Store::open(&path.join("sessions.sqlite3")).map_err(std::io::Error::other)?);
   Ok(())
- }).invoke_handler(tauri::generate_handler![capture_protection_status,set_capture_protection,transcription::start_transcription,transcription::stop_transcription,test_native_microphone,arm_microphone_test,disarm_microphone_test,provider::save_api_key,provider::has_api_key,provider::delete_api_key,provider::ask_nvidia,system_audio_availability,test_system_audio_access,history_enabled,set_history,list_sessions,save_session,delete_session,delete_all_data])
+ }).invoke_handler(tauri::generate_handler![capture_screen_region,capture_protection_status,set_capture_protection,ensure_capture_protection,transcription::start_transcription,transcription::stop_transcription,test_native_microphone,arm_microphone_test,disarm_microphone_test,provider::save_api_key,provider::has_api_key,provider::delete_api_key,provider::save_meta_api_key,provider::has_meta_api_key,provider::delete_meta_api_key,provider::analyze_image,provider::ask_nvidia,system_audio_availability,test_system_audio_access,history_enabled,set_history,list_sessions,save_session,delete_session,delete_all_data])
  .run(tauri::generate_context!()).expect("failed to run Live Companion");
 }
 

@@ -7,6 +7,7 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react()],
+  optimizeDeps: { include: ["react", "react-dom/client"] },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
@@ -16,7 +17,7 @@ export default defineConfig(() => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",
@@ -26,7 +27,7 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/build-tools/**", "**/resources/**", "**/artifacts/**", "**/models/**"],
     },
   },
 }));

@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.raxley.livecompanion",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort",
+    "devUrl": "http://127.0.0.1:4173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },

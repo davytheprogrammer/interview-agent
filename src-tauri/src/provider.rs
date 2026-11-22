@@ -6,6 +6,34 @@ const SERVICE: &str = "com.raxley.livecompanion";
 const ACCOUNT: &str = "nvidia-api-key";
 const ENDPOINT: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 const MODEL: &str = "poolside/laguna-xs-2.1";
+const META_SERVICE: &str = "com.raxley.livecompanion";
+const META_ACCOUNT: &str = "meta-model-api-key";
+fn meta_entry() -> Result<keyring::Entry, String> { keyring::Entry::new(META_SERVICE, META_ACCOUNT).map_err(|_| "Secure credential storage is unavailable on this system.".into()) }
+
+#[tauri::command]
+pub fn save_meta_api_key(key: String) -> Result<(), String> { let key=key.trim(); if key.is_empty() || key.len()>4096 || key.chars().any(char::is_control) { return Err("Enter a valid Meta Model API key.".into()); } meta_entry()?.set_password(key).map_err(|_| "Could not save the Meta key in the operating system credential store.".into()) }
+#[tauri::command]
+pub fn has_meta_api_key() -> Result<bool, String> { match meta_entry()?.get_password() { Ok(_) => Ok(true), Err(keyring::Error::NoEntry) => Ok(false), Err(_) => Err("Could not access the operating system credential store.".into()) } }
+#[tauri::command]
+pub fn delete_meta_api_key() -> Result<(), String> { match meta_entry()?.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(_) => Err("Could not delete the saved Meta key.".into()) } }
+pub fn meta_api_key() -> Result<String,String> { meta_entry()?.get_password().map_err(|_| "Save your Meta Model API key in Settings before using Muse transcription.".into()) }
+
+#[derive(Deserialize)] struct ResponsesReply { output: Option<Vec<ResponsesOutput>> }
+#[derive(Deserialize)] struct ResponsesOutput { content: Option<Vec<ResponsesContent>> }
+#[derive(Deserialize)] struct ResponsesContent { text: Option<String> }
+#[tauri::command]
+pub async fn analyze_image(question: String, image_data_url: String) -> Result<String,String> {
+ let question=question.trim();
+ if question.is_empty() || question.len()>4000 { return Err("Enter a short question about this image.".into()); }
+ if image_data_url.len()>18_000_000 || !(image_data_url.starts_with("data:image/png;base64,") || image_data_url.starts_with("data:image/jpeg;base64," ) || image_data_url.starts_with("data:image/webp;base64,")) { return Err("Choose a PNG, JPEG, or WebP image under 12 MB.".into()); }
+ let key=meta_entry()?.get_password().map_err(|_| "Save your Meta Model API key in Settings first.".to_string())?;
+ let client=reqwest::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create the network connection.")?;
+ let concise_prompt=format!("Answer the user's question using only evidence visible in the screenshot. Be precise and concise: give the direct answer first, then at most two short supporting details. Do not guess obscured or unreadable content; say clearly when the screenshot does not provide enough information.\n\nUser question: {question}");
+ let response=client.post("https://api.meta.ai/v1/responses").bearer_auth(key).json(&json!({"model":"muse-spark-1.3-contributor","max_output_tokens":220,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":concise_prompt},{"type":"input_image","image_url":image_data_url}]}]})).send().await.map_err(|e| if e.is_timeout() { "Image analysis timed out." } else { "Could not reach Meta Model API." })?;
+ if !response.status().is_success() { return Err(match response.status().as_u16() { 401|403=>"Meta rejected the key or model access.",429=>"Meta rate limit reached. Try again shortly.",500..=599=>"Meta is temporarily unavailable.",_=>"Meta rejected the image request. Check account and model access."}.into()); }
+ let body:ResponsesReply=response.json().await.map_err(|_| "Meta returned an unexpected image-analysis response.")?;
+ body.output.unwrap_or_default().into_iter().flat_map(|o|o.content.unwrap_or_default()).filter_map(|c|c.text).find(|t|!t.trim().is_empty()).ok_or_else(|| "Meta returned no image analysis.".into())
+}
 
 fn entry() -> Result<keyring::Entry, String> { keyring::Entry::new(SERVICE, ACCOUNT).map_err(|_| "Secure credential storage is unavailable on this system.".into()) }
 
