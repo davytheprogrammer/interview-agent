@@ -29,11 +29,10 @@ def main():
     if action == "capture":
         import msvcrt
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-    # Ask WASAPI to remix to stereo first: SoundCard documents a Windows
-    # single-channel capture issue. Convert to mono only after capture.
-    with device.recorder(samplerate=16000, channels=2, blocksize=4096) as recorder:
+    # Low latency streaming: record 512 frames (32ms) with 1024 blocksize
+    with device.recorder(samplerate=16000, channels=2, blocksize=1024) as recorder:
         while True:
-            data = recorder.record(numframes=1024)
+            data = recorder.record(numframes=512)
             if data.size == 0:
                 continue
             mono = np.mean(data, axis=1) if data.ndim == 2 else data
