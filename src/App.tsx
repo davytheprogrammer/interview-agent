@@ -23,6 +23,22 @@ function App() {
   const [activeProvider, setActiveProvider] = useState('gemini');
   const [providerKey, setProviderKey] = useState('');
   const [hasProviderKeyMap, setHasProviderKeyMap] = useState<Record<string, boolean>>({});
+  const [opacity, setOpacity] = useState<number>(0.85);
+
+  const applyOpacity = async (val: number) => {
+    setOpacity(val);
+    document.documentElement.style.setProperty('--glass-opacity', String(val));
+    document.documentElement.style.setProperty('--card-opacity', String(Math.min(val + 0.05, 1.0)));
+    try {
+      await invoke('set_window_opacity', { opacity: val });
+    } catch {}
+  };
+
+  const cycleOpacity = async () => {
+    const levels = [1.0, 0.85, 0.70, 0.50];
+    const nextIdx = (levels.indexOf(opacity) + 1) % levels.length;
+    await applyOpacity(levels[nextIdx]);
+  };
 
   const refreshProviderStatus = async () => {
     try {
@@ -120,7 +136,12 @@ function App() {
   return <main className="companion">
     <header>
       <div className="identity"><span className="logo" aria-hidden="true">✳</span><div><strong>Live Companion</strong><small>Your meeting sidekick</small></div></div>
-      <button className="icon" aria-label={showSettings ? 'Close settings' : 'Open settings'} aria-expanded={showSettings} onClick={() => setShowSettings(!showSettings)}>⚙</button>
+      <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+        <button className="glass-btn" title="Toggle window translucency (100% Solid -> 85% Frosted Glass -> 70% Ghost -> 50% Stealth)" onClick={() => void cycleOpacity()}>
+          💧 {Math.round(opacity * 100)}%
+        </button>
+        <button className="icon" aria-label={showSettings ? 'Close settings' : 'Open settings'} aria-expanded={showSettings} onClick={() => setShowSettings(!showSettings)}>⚙</button>
+      </div>
     </header>
     {showSettings ? <section className="settings">
       <div className="section-heading"><div><span className="eyebrow">SETUP</span><h1>Connect your assistant</h1></div><button className="text-button" onClick={() => setShowSettings(false)}>Done</button></div>
@@ -165,6 +186,15 @@ function App() {
       }} disabled={!hasMetaKey}>⚡ Test Latency</button>{hasMetaKey && <button onClick={async()=>{try{await invoke('delete_meta_api_key');await refreshMetaKey();setMessage('Meta key deleted.')}catch(e){setMessage(String(e))}}}>Delete Meta key</button>}</div><p>Keys are stored in the operating system credential store.</p></div><span className="badge">{hasMetaKey?'Key saved':'Not connected'}</span></div>
       <div className="setup-card"><span className="setup-icon">03</span><div><strong>Audio access</strong><p>{audio?.description ?? 'Checking available sources…'} Test computer audio or request microphone access. Each test stops immediately and saves no audio.</p><div className="actions"><button onClick={() => void refreshAudio()} disabled={checkingAudio || recording !== 'idle'}>Refresh devices</button><button onClick={() => void testComputerAudio()} disabled={!audio?.available || checkingAudio || recording !== 'idle'}>Test computer audio</button><button onClick={() => void testMicrophone()} disabled={checkingAudio || recording !== 'idle'}>Test microphone</button></div>{audioCheck && <p role="status">{audioCheck}</p>}<p>Muse Voice Transcribe receives live audio during capture and detects completed speech turns. Completed meeting turns are sent to the text assistant for suggestions.</p></div><span className="badge">{audio?.available ? 'Source found' : 'Unavailable'}</span></div>
       <div className="setup-card"><span className="setup-icon">03</span><div><strong>Screen sharing</strong><p>{captureProtection?.description ?? 'Checking screen-share protection…'}</p>{captureProtection?.supported && <label className="capture-toggle"><input type="checkbox" checked={captureProtection.requested} onChange={e => void changeProtection(e.target.checked)}/><span className="switch-track"><span className="switch-thumb"></span></span><span className="switch-label">Request OS capture exclusion</span></label>}</div><span className="badge">{captureProtection?.supported ? (captureProtection.requested ? 'Requested' : 'Off') : 'Unavailable'}</span></div>
+      <div className="setup-card"><span className="setup-icon">04</span><div><strong>Window Translucency & Glass</strong><p>Adjust window transparency so you can see your code, slides, or meeting through the companion while reading answers.</p>
+        <div style={{display:'flex',gap:'8px',marginTop:'8px',flexWrap:'wrap'}}>
+          {[1.0, 0.85, 0.70, 0.50].map(val => (
+            <button key={val} style={{background: opacity === val ? '#3b82f6' : '#27272a', color: '#fff', padding: '5px 12px', fontSize: '12px', borderRadius: '6px'}} onClick={() => void applyOpacity(val)}>
+              {val === 1.0 ? '100% Solid' : val === 0.85 ? '85% Frosted' : val === 0.70 ? '70% Ghost' : '50% Stealth'}
+            </button>
+          ))}
+        </div>
+      </div><span className="badge">{Math.round(opacity * 100)}%</span></div>
       <p className="privacy">While capture is active, live audio is streamed to Meta for transcription; completed meeting speech is sent to your configured text assistant. Images are sent to Meta only when you select one for analysis. No raw audio is saved.</p>{recording !== 'idle' && <button className="listen" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>■ Stop capture</button>}{message && <p role="status" className="message">{message}</p>}
     </section> : <>
       <div className="statusline" role="status" aria-live="polite"><span className={'status-dot ' + (recording === 'recording' ? 'live' : '')}/> <span>{recording === 'recording' ? (captureMode === 'computer' ? 'Listening to computer audio' : 'Microphone recording') : recording === 'starting' ? 'Starting audio…' : recording === 'stopping' ? 'Stopping audio…' : 'Not listening'}</span>{recording !== 'idle' ? <button className="text-button" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>Privacy stop</button> : <button className="text-button" onClick={() => setShowSettings(true)}>Set up audio & AI →</button>}</div>
