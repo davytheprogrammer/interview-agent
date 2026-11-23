@@ -14,9 +14,8 @@ function App() {
   const [metaKey, setMetaKey] = useState('');
   const [hasMetaKey, setHasMetaKey] = useState(false);
   const [imageAnswer, setImageAnswer] = useState('');
-  const [imagePreview, setImagePreview] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
-  const [imageQuestion, setImageQuestion] = useState('Analyze what is visible on this screen and provide the direct, actionable solution.');
+  const defaultVisualPrompt = 'Analyze what is visible on this screen and provide the direct, actionable solution.';
   const [answer, setAnswer] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -69,7 +68,7 @@ function App() {
   useEffect(() => {
     if (showSettings) {
       void toggleOrientation(false);
-    } else if (tab === 'meeting') {
+    } else if (tab === 'meeting' || tab === 'vision') {
       void toggleOrientation(true);
     } else {
       void toggleOrientation(false);
@@ -104,8 +103,7 @@ function App() {
     setImageAnswer('');
     try {
       const data = await invoke<string>('capture_screen_region');
-      setImagePreview(data);
-      const q = (customPrompt || imageQuestion).trim();
+      const q = (customPrompt || defaultVisualPrompt).trim();
       const result = await invoke<string>('analyze_image', { question: q, imageDataUrl: data });
       setImageAnswer(result);
     } catch(e) {
@@ -187,7 +185,6 @@ function App() {
                   setMessage('Silently scanning screen in memory...');
                   try {
                     const data = await invoke<string>('capture_screen_region');
-                    setImagePreview(data);
                     setImageBusy(true);
                     const prompt = meetingText
                       ? `The interviewer asked: "${meetingText}". Using what is visible on screen, provide the direct answer.`
@@ -230,50 +227,46 @@ function App() {
         <p className="source">Your question and context are sent to the configured text assistant when you ask. Review generated code before using it.</p>
         {message && <p role="alert" className="message">{message}</p>}{answer && <div className="callout"><span aria-hidden="true">✳</span><p><strong>AI-generated answer</strong><br/>{answer}</p></div>}
         {!hasKey && <div className="callout"><span aria-hidden="true">✳</span><p><strong>Setup required.</strong><br/>Add your NVIDIA key to get answers. <button className="inline" onClick={() => setShowSettings(true)}>View setup</button></p></div>}
-      </section> : <section className="body vision-page">
-        <span className="eyebrow">SILENT SCREEN MONITOR</span><h1>Visual<br/><em>Intelligence.</em></h1><p className="intro">Captures your screen directly from the GPU framebuffer in RAM in ~12ms. Zero screen dimming, zero overlays, and zero window focus loss (invisible to proctoring software & screen shares).</p>
-        <div className="vision-card">
-          <button className="vision-capture-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze()}>
-            {imageBusy ? '⚡ Analyzing Screen in RAM…' : '⚡ Silent Screen Snap & Solve'}
-          </button>
-          
-          <div className="preset-container">
-            <span className="preset-label">Quick Analysis Presets:</span>
-            <div className="preset-grid">
-              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Solve the coding problem or challenge shown on screen. Give the complete, optimal solution with code.')}>🎯 Solve Problem</button>
-              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Identify the bug, syntax issue, or error in the code on screen, and explain how to fix it.')}>🔍 Debug & Fix Code</button>
-              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Explain the architecture, system design, or diagram shown on screen.')}>🏗️ Architecture</button>
-              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Analyze the code on screen. Give the optimal time and space complexity with a brief explanation.')}>⏱️ Complexity</button>
+      </section> : <section className="body vision-landscape">
+        <div className="vision-callout-card">
+          <div className="vision-header-row">
+            <div className="vision-meta">
+              <span className="vision-badge">AI VISUAL TELEPROMPTER</span>
+              <span className="vision-status-text">
+                {imageBusy ? '⚡ Capturing & analyzing screen in RAM…' : imageAnswer ? 'Visual solution ready' : 'Ready to capture screen'}
+              </span>
+            </div>
+            <div className="vision-controls">
+              <div className="vision-pills">
+                <button className="vision-pill-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze('Solve the coding problem or challenge on screen. Provide the complete optimal code and direct solution.')}>🎯 Solve</button>
+                <button className="vision-pill-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze('Identify the bug, syntax issue, or error in the code on screen, and provide the fix.')}>🔍 Debug</button>
+                <button className="vision-pill-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze('Explain the architecture, system design, or diagram shown on screen.')}>🏗️ Design</button>
+                <button className="vision-pill-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze('Analyze the algorithm on screen. Give the optimal time and space complexity.')}>⏱️ Complexity</button>
+              </div>
+              <button className="snap-action-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze()}>
+                {imageBusy ? '⚡ Scanning…' : '⚡ Snap Screen'}
+              </button>
             </div>
           </div>
-
-          <label htmlFor="vision-question">Custom visual question (optional)</label>
-          <textarea id="vision-question" value={imageQuestion} onChange={e => setImageQuestion(e.target.value)} placeholder="Type what to look for on screen or leave as is..." rows={2}/>
-
-          {imageBusy && <p role="status" className="vision-status">⚡ Analyzing screen frame with Gemini / Meta Vision…</p>}
-
-          {imagePreview && (
-            <div className="vision-preview-card">
-              <div className="preview-header">
-                <span>In-Memory Frame Buffer</span>
-                <button className="text-button" onClick={() => { setImagePreview(''); setImageAnswer(''); }}>Clear</button>
-              </div>
-              <img src={imagePreview} alt="Silent screen frame" />
-            </div>
-          )}
-
-          {imageAnswer && (
-            <div className="callout vision-callout">
-              <div className="callout-header">
-                <span aria-hidden="true">✳</span>
-                <strong>AI Visual Solution</strong>
-                <button className="copy-btn" onClick={() => { navigator.clipboard.writeText(imageAnswer); setMessage('Solution copied to clipboard!'); }}>Copy</button>
-              </div>
-              <p>{imageAnswer}</p>
-            </div>
-          )}
+          <div className="vision-teleprompter-text">
+            {imageBusy ? (
+              <span className="vision-loading-text">
+                <span className="status-dot live" style={{display:'inline-block',marginRight:'8px'}} />
+                Silently capturing screen framebuffer in RAM… Analyzing with Vision AI…
+              </span>
+            ) : imageAnswer ? (
+              <>
+                <button className="vision-copy-floating" onClick={() => { navigator.clipboard.writeText(imageAnswer); setMessage('Copied to clipboard!'); }}>Copy</button>
+                {imageAnswer}
+              </>
+            ) : (
+              <span className="teleprompter-placeholder">
+                Click "⚡ Snap Screen" or a preset to silently analyze your screen in ~300ms without window focus loss or screen flickering. Direct answers appear here at eye level.
+              </span>
+            )}
+          </div>
         </div>
-        {message && <p role="alert" className="message">{message}</p>}
+        {message && <p role="alert" className="message" style={{margin:'6px 0 0',textAlign:'center'}}>{message}</p>}
       </section>}
       <footer><span>{recording === 'recording' ? (captureMode === 'computer' ? '● Computer audio active' : '● Microphone active') : recording === 'idle' ? '◌ No audio captured' : '◌ Audio changing state'}</span><span>{captureProtection?.supported && captureProtection.requested ? 'Capture exclusion requested — verify' : 'Window may appear in screen shares'}</span></footer>
     </>}
