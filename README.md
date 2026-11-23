@@ -31,9 +31,14 @@ Choose your preferred LLM provider directly from Settings with built-in round-tr
 - **WASAPI Loopback Capture:** Direct hardware loopback with a 512-frame recording buffer for near-zero audio latency.
 - **Hardware-Agnostic:** Captures computer audio directly from the speaker output (no virtual cables required).
 
-### 6. Coding & Screenshot Analysis
-- **Coding Assistant:** Ask technical interview questions or dictate problems using your microphone.
-- **Instant Snipping:** Snip any area on your screen to analyze diagrams, code challenges, or system designs using Meta Muse Spark vision.
+### 6. Natural Human Interview Flow & Session Memory
+- **First-Person Candidate Persona:** Speaks naturally in the first person (`"I"`, `"In my experience"`, `"My approach is..."`) as the candidate. Provides articulate, well-structured answers (2 to 4 fluid sentences) with practical nuance and trade-offs—never robotic one-sentence stubs or AI essays.
+- **In-Memory Multi-Turn History:** Automatically maintains dialogue memory across spoken questions and visual screen snaps for context-aware follow-ups throughout the interview.
+
+### 7. Silent Screen Monitor & Translucent Frosted Glass
+- **Silent Screen Capture (~12ms):** Native Win32 GDI+ GPU framebuffer capture in memory. No window switching, no focus loss, and no screen dimming—completely invisible to proctoring software.
+- **Interview Intelligence for Visual Snaps:** Directly understands live interview context for LeetCode challenges (optimal Big-O, code, explanation), system design diagrams (data flow, bottlenecks), and code debugging (root cause + concise fix).
+- **Translucent Ghost Mode:** Native alpha blending (`WS_EX_LAYERED`) and CSS backdrop blur (100% Solid, 85% Frosted Glass, 70% Ghost, 50% Stealth) to see meeting video or code directly through the app.
 
 ---
 
