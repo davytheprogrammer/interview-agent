@@ -140,9 +140,42 @@ pub fn has_api_key() -> Result<bool, String> { has_provider_key("nvidia".into())
 #[tauri::command]
 pub fn delete_api_key() -> Result<(), String> { let _ = get_entry(NVIDIA_ACCOUNT)?.delete_credential(); Ok(()) }
 
-#[derive(Deserialize)] struct ResponsesReply { output: Option<Vec<ResponsesOutput>> }
-#[derive(Deserialize)] struct ResponsesOutput { content: Option<Vec<ResponsesContent>> }
-#[derive(Deserialize)] struct ResponsesContent { text: Option<String> }
+#[derive(Deserialize)]
+struct ResponsesReply {
+    output: Option<Vec<ResponsesOutput>>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ResponsesOutput {
+    content: Option<Vec<ResponsesContent>>,
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResponsesContent {
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+}
+
+#[derive(Deserialize)]
+struct GeminiCandidate {
+    content: Option<GeminiContent>,
+}
+
+#[derive(Deserialize)]
+struct GeminiContent {
+    parts: Option<Vec<GeminiPart>>,
+}
+
+#[derive(Deserialize)]
+struct GeminiPart {
+    text: Option<String>,
+}
 
 const VISUAL_SYSTEM_PROMPT: &str = "\
 You are an expert technical co-pilot supporting a candidate during a live technical job interview. \
@@ -155,15 +188,207 @@ Understand the interview context from what is shown on screen and provide a high
 - Follow-ups & Refinements: When asked to refine, optimize, explain, or alter a previous answer, respond smoothly and naturally like a sharp, cool senior engineer having an effortless technical conversation. Be direct, clear, and insightful with zero robotic fluff or preamble.
 Keep your response focused, intelligent, natural, and cool. Speak directly to the technical solution without fluff, preamble, or generic chatbot disclaimers.";
 
+async fn try_gemini_vision(
+    client: &reqwest::Client,
+    key: &str,
+    prompt: &str,
+    mime: &str,
+    raw_b64: &str,
+) -> Result<String, String> {
+    let models = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.8-flash"];
+    let mut last_err = String::new();
+
+    for model in models {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={}",
+            key.trim()
+        );
+        let res = client
+            .post(&url)
+            .json(&json!({
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": mime, "data": raw_b64}}
+                    ]
+                }],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048}
+            }))
+            .send()
+            .await;
+
+        match res {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    if let Ok(body) = response.json::<GeminiResponse>().await {
+                        if let Some(text) = body
+                            .candidates
+                            .unwrap_or_default()
+                            .into_iter()
+                            .flat_map(|c| c.content)
+                            .flat_map(|co| co.parts.unwrap_or_default())
+                            .filter_map(|p| p.text)
+                            .find(|t| !t.trim().is_empty())
+                        {
+                            return Ok(text);
+                        }
+                    }
+                } else {
+                    let err_body = response.text().await.unwrap_or_default();
+                    last_err = format!("Gemini ({model}) {status}: {err_body}");
+                    if status.as_u16() == 429 || status.as_u16() == 404 {
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("Gemini network error: {e}");
+            }
+        }
+    }
+
+    Err(last_err)
+}
+
+async fn try_meta_vision(
+    client: &reqwest::Client,
+    key: &str,
+    prompt: &str,
+    image_data_url: &str,
+) -> Result<String, String> {
+    let res = client
+        .post("https://api.meta.ai/v1/responses")
+        .bearer_auth(key.trim())
+        .json(&json!({
+            "model": "muse-spark-1.3-contributor",
+            "max_output_tokens": 2048,
+            "reasoning": {"effort": "low"},
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": image_data_url}
+                ]
+            }]
+        }))
+        .send()
+        .await;
+
+    match res {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                if let Ok(body) = response.json::<ResponsesReply>().await {
+                    for item in body.output.unwrap_or_default() {
+                        if let Some(content_vec) = item.content {
+                            for c in content_vec {
+                                if let Some(t) = c.text {
+                                    if !t.trim().is_empty() {
+                                        return Ok(t);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(t) = item.text {
+                            if !t.trim().is_empty() {
+                                return Ok(t);
+                            }
+                        }
+                    }
+                    Err("Meta returned an empty response body.".into())
+                } else {
+                    Err("Could not parse Meta API response format.".into())
+                }
+            } else {
+                let err_text = response.text().await.unwrap_or_default();
+                Err(format!("Meta API {status}: {err_text}"))
+            }
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                Err("Meta visual analysis timed out.".into())
+            } else {
+                Err(format!("Could not reach Meta API: {e}"))
+            }
+        }
+    }
+}
+
+async fn try_meta_chat(
+    client: &reqwest::Client,
+    key: &str,
+    system_prompt: &str,
+    full_context: &str,
+    question: &str,
+) -> Result<String, String> {
+    let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
+    let res = client.post("https://api.meta.ai/v1/responses").bearer_auth(key.trim()).json(&json!({
+        "model": "muse-spark-1.3-contributor",
+        "max_output_tokens": 2048,
+        "reasoning": {"effort": "low"},
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}]
+        }]
+    })).send().await;
+
+    match res {
+        Ok(response) => {
+            if response.status().is_success() {
+                if let Ok(body) = response.json::<ResponsesReply>().await {
+                    for item in body.output.unwrap_or_default() {
+                        if let Some(content_vec) = item.content {
+                            for c in content_vec {
+                                if let Some(t) = c.text {
+                                    if !t.trim().is_empty() {
+                                        return Ok(t);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(t) = item.text {
+                            if !t.trim().is_empty() {
+                                return Ok(t);
+                            }
+                        }
+                    }
+                    Err("Meta returned an empty chat response.".into())
+                } else {
+                    Err("Could not parse Meta chat response.".into())
+                }
+            } else {
+                let status = response.status();
+                let err_text = response.text().await.unwrap_or_default();
+                Err(format!("Meta status {}: {err_text}", status))
+            }
+        }
+        Err(e) => Err(format!("Meta network error: {e}")),
+    }
+}
+
 #[tauri::command]
 pub async fn analyze_image(question: String, image_data_url: String) -> Result<String, String> {
     let question = question.trim();
-    if question.is_empty() || question.len() > 8000 { return Err("Enter a short question about this screen.".into()); }
-    if image_data_url.len() > 18_000_000 || !(image_data_url.starts_with("data:image/png;base64,") || image_data_url.starts_with("data:image/jpeg;base64,") || image_data_url.starts_with("data:image/webp;base64,")) {
+    if question.is_empty() || question.len() > 8000 {
+        return Err("Enter a short question about this screen.".into());
+    }
+    if image_data_url.len() > 18_000_000
+        || !(image_data_url.starts_with("data:image/png;base64,")
+            || image_data_url.starts_with("data:image/jpeg;base64,")
+            || image_data_url.starts_with("data:image/webp;base64,"))
+    {
         return Err("Invalid image data captured.".into());
     }
 
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create the network connection.")?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(35))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not create network connection.".to_string())?;
+
     let active = get_active_provider().unwrap_or_else(|_| "gemini".into());
     let session_context = format_session_context();
 
@@ -172,88 +397,85 @@ pub async fn analyze_image(question: String, image_data_url: String) -> Result<S
         Screen Analysis Request / Interview Question: {question}"
     );
 
-    // 1. Try GEMINI VISION first if active is gemini or if gemini key exists
-    let has_gemini = has_provider_key("gemini".into()).unwrap_or(false);
-    let has_meta = has_meta_api_key().unwrap_or(false);
+    let (mime, raw_b64) = if let Some(s) = image_data_url.strip_prefix("data:image/jpeg;base64,") {
+        ("image/jpeg", s)
+    } else if let Some(s) = image_data_url.strip_prefix("data:image/png;base64,") {
+        ("image/png", s)
+    } else if let Some(s) = image_data_url.strip_prefix("data:image/webp;base64,") {
+        ("image/webp", s)
+    } else {
+        ("image/jpeg", image_data_url.as_str())
+    };
 
-    if (active == "gemini" && has_gemini) || (has_gemini && !has_meta) {
-        if let Ok(key) = get_entry(GEMINI_ACCOUNT)?.get_password() {
-            if !key.trim().is_empty() {
-                let (mime, raw_b64) = if let Some(s) = image_data_url.strip_prefix("data:image/jpeg;base64,") {
-                    ("image/jpeg", s)
-                } else if let Some(s) = image_data_url.strip_prefix("data:image/png;base64,") {
-                    ("image/png", s)
-                } else if let Some(s) = image_data_url.strip_prefix("data:image/webp;base64,") {
-                    ("image/webp", s)
-                } else {
-                    ("image/jpeg", image_data_url.as_str())
-                };
+    let gemini_key = get_entry(GEMINI_ACCOUNT)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|k| !k.trim().is_empty());
+    let meta_key = get_entry(META_ACCOUNT)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|k| !k.trim().is_empty());
 
-                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", key.trim());
-                let res = client.post(&url).json(&json!({
-                    "contents": [{
-                        "parts": [
-                            {"text": visual_prompt},
-                            {"inline_data": {"mime_type": mime, "data": raw_b64}}
-                        ]
-                    }],
-                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
-                })).send().await;
+    if gemini_key.is_none() && meta_key.is_none() {
+        return Err("Save your Gemini or Meta API key in Settings to analyze your screen.".into());
+    }
 
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        if let Ok(body) = response.json::<GeminiResponse>().await {
-                            if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
-                                add_session_dialogue("Interviewer / Screen Context", question);
-                                add_session_dialogue("Candidate Solution", &text);
-                                return Ok(text);
-                            }
-                        }
-                    } else {
-                        eprintln!("Gemini vision failed with status: {}", response.status());
-                    }
+    let mut errors: Vec<String> = Vec::new();
+    // Prioritize Meta Muse first for vision whenever active is meta or any other provider,
+    // since user has abundant credits on Meta Muse and it is a stronger reasoning model.
+    let try_meta_first = active != "gemini";
+
+    if try_meta_first {
+        if let Some(ref m_key) = meta_key {
+            match try_meta_vision(&client, m_key, &visual_prompt, &image_data_url).await {
+                Ok(text) => {
+                    add_session_dialogue("Interviewer / Screen Context", question);
+                    add_session_dialogue("Candidate Solution", &text);
+                    return Ok(text);
                 }
+                Err(e) => errors.push(format!("Meta: {e}")),
+            }
+        }
+        if let Some(ref g_key) = gemini_key {
+            match try_gemini_vision(&client, g_key, &visual_prompt, mime, raw_b64).await {
+                Ok(text) => {
+                    add_session_dialogue("Interviewer / Screen Context", question);
+                    add_session_dialogue("Candidate Solution", &text);
+                    return Ok(text);
+                }
+                Err(e) => errors.push(format!("Gemini fallback: {e}")),
+            }
+        }
+    } else {
+        if let Some(ref g_key) = gemini_key {
+            match try_gemini_vision(&client, g_key, &visual_prompt, mime, raw_b64).await {
+                Ok(text) => {
+                    add_session_dialogue("Interviewer / Screen Context", question);
+                    add_session_dialogue("Candidate Solution", &text);
+                    return Ok(text);
+                }
+                Err(e) => errors.push(format!("Gemini: {e}")),
+            }
+        }
+        if let Some(ref m_key) = meta_key {
+            match try_meta_vision(&client, m_key, &visual_prompt, &image_data_url).await {
+                Ok(text) => {
+                    add_session_dialogue("Interviewer / Screen Context", question);
+                    add_session_dialogue("Candidate Solution", &text);
+                    return Ok(text);
+                }
+                Err(e) => errors.push(format!("Meta fallback: {e}")),
             }
         }
     }
 
-    // 2. Try META MUSE SPARK VISION
-    if let Ok(key) = get_entry(META_ACCOUNT)?.get_password() {
-        if !key.trim().is_empty() {
-            let response = client.post("https://api.meta.ai/v1/responses").bearer_auth(key).json(&json!({
-                "model": "muse-spark-1.3-contributor",
-                "max_output_tokens": 800,
-                "input": [{
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": visual_prompt}, {"type": "input_image", "image_url": image_data_url}]
-                }]
-            })).send().await.map_err(|e| if e.is_timeout() { "Visual analysis timed out." } else { "Could not reach Meta Model API." })?;
-
-            if response.status().is_success() {
-                if let Ok(body) = response.json::<ResponsesReply>().await {
-                    if let Some(text) = body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()) {
-                        add_session_dialogue("Interviewer / Screen Context", question);
-                        add_session_dialogue("Candidate Solution", &text);
-                        return Ok(text);
-                    }
-                }
-            }
-        }
-    }
-
-    Err("Add your Gemini or Meta API key in Settings to analyze your screen.".into())
+    Err(format!("Visual analysis failed. {}", errors.join(" | ")))
 }
 
 #[derive(Deserialize)] struct Completion { choices: Vec<Choice> }
 #[derive(Deserialize)] struct Choice { message: Message }
 #[derive(Deserialize)] struct Message { content: Option<String> }
 #[derive(Deserialize)] #[serde(rename_all="lowercase")] pub enum AskMode { Meeting, Coding }
-
-#[derive(Deserialize)] struct GeminiResponse { candidates: Option<Vec<GeminiCandidate>> }
-#[derive(Deserialize)] struct GeminiCandidate { content: Option<GeminiContent> }
-#[derive(Deserialize)] struct GeminiContent { parts: Option<Vec<GeminiPart>> }
-#[derive(Deserialize)] struct GeminiPart { text: Option<String> }
 
 const MEETING_SYSTEM_PROMPT: &str = "\
 You are an expert interview co-pilot whispering spoken answers directly to a candidate in a live technical job interview. \
@@ -291,22 +513,27 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
 
     // 1. GEMINI (Fastest, ultra-low latency)
     if active == "gemini" {
-        if let Ok(key) = get_entry(GEMINI_ACCOUNT)?.get_password() {
-            if !key.trim().is_empty() {
-                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", key.trim());
-                let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
-                let res = client.post(&url).json(&json!({
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}
-                })).send().await;
+        if let Ok(entry) = get_entry(GEMINI_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
+                    let models = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.8-flash"];
+                    for model in models {
+                        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={}", key.trim());
+                        let res = client.post(&url).json(&json!({
+                            "contents": [{"parts": [{"text": prompt}]}],
+                            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}
+                        })).send().await;
 
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        if let Ok(body) = response.json::<GeminiResponse>().await {
-                            if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
-                                add_session_dialogue("Interviewer", question);
-                                add_session_dialogue("Candidate", &text);
-                                return Ok(text);
+                        if let Ok(response) = res {
+                            if response.status().is_success() {
+                                if let Ok(body) = response.json::<GeminiResponse>().await {
+                                    if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
+                                        add_session_dialogue("Interviewer", question);
+                                        add_session_dialogue("Candidate", &text);
+                                        return Ok(text);
+                                    }
+                                }
                             }
                         }
                     }
@@ -317,25 +544,27 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
 
     // 2. TOGETHER AI (arize-ai/qwen-2-1.5b-instruct)
     if active == "together" {
-        if let Ok(key) = get_entry(TOGETHER_ACCOUNT)?.get_password() {
-            if !key.trim().is_empty() {
-                let res = client.post("https://api.together.xyz/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
-                    "model": "arize-ai/qwen-2-1.5b-instruct",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 1024
-                })).send().await;
+        if let Ok(entry) = get_entry(TOGETHER_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    let res = client.post("https://api.together.xyz/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
+                        "model": "arize-ai/qwen-2-1.5b-instruct",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 1024
+                    })).send().await;
 
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        if let Ok(body) = response.json::<Completion>().await {
-                            if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
-                                add_session_dialogue("Interviewer", question);
-                                add_session_dialogue("Candidate", &text);
-                                return Ok(text);
+                    if let Ok(response) = res {
+                        if response.status().is_success() {
+                            if let Ok(body) = response.json::<Completion>().await {
+                                if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                                    add_session_dialogue("Interviewer", question);
+                                    add_session_dialogue("Candidate", &text);
+                                    return Ok(text);
+                                }
                             }
                         }
                     }
@@ -346,58 +575,76 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
 
     // 3. RAX AI (Official Endpoint & rax-4.0 model)
     if active == "rax" {
-        if let Ok(key) = get_entry(RAX_ACCOUNT)?.get_password() {
-            if !key.trim().is_empty() {
-                let res = client.post("https://www.ai.raxcore.dev/api/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
-                    "model": "rax-4.0",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 1024
-                })).send().await;
+        if let Ok(entry) = get_entry(RAX_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    let res = client.post("https://www.ai.raxcore.dev/api/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
+                        "model": "rax-4.0",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 1024
+                    })).send().await;
 
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        if let Ok(body) = response.json::<Completion>().await {
-                            if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
-                                add_session_dialogue("Interviewer", question);
-                                add_session_dialogue("Candidate", &text);
-                                return Ok(text);
+                    if let Ok(response) = res {
+                        if response.status().is_success() {
+                            if let Ok(body) = response.json::<Completion>().await {
+                                if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                                    add_session_dialogue("Interviewer", question);
+                                    add_session_dialogue("Candidate", &text);
+                                    return Ok(text);
+                                }
                             }
+                        } else {
+                            let err_text = response.text().await.unwrap_or_default();
+                            eprintln!("Rax AI error: {}", err_text);
                         }
-                    } else {
-                        let err_text = response.text().await.unwrap_or_default();
-                        eprintln!("Rax AI error: {}", err_text);
                     }
                 }
             }
         }
     }
 
-    // 4. META MUSE SPARK
+    // 4. META MUSE SPARK (Primary if active == "meta")
     if active == "meta" {
-        if let Ok(key) = get_entry(META_ACCOUNT)?.get_password() {
-            if !key.trim().is_empty() {
-                let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
-                let res = client.post("https://api.meta.ai/v1/responses").bearer_auth(key.trim()).json(&json!({
-                    "model": "muse-spark-1.3-contributor",
-                    "max_output_tokens": 1024,
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": prompt}]
-                    }]
-                })).send().await;
+        if let Ok(entry) = get_entry(META_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    if let Ok(text) = try_meta_chat(&client, &key, system_prompt, &full_context, question).await {
+                        add_session_dialogue("Interviewer", question);
+                        add_session_dialogue("Candidate", &text);
+                        return Ok(text);
+                    }
+                }
+            }
+        }
+    }
 
-                if let Ok(response) = res {
-                    if response.status().is_success() {
-                        if let Ok(body) = response.json::<ResponsesReply>().await {
-                            if let Some(text) = body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()) {
-                                add_session_dialogue("Interviewer", question);
-                                add_session_dialogue("Candidate", &text);
-                                return Ok(text);
+    // 5. NVIDIA
+    if active == "nvidia" {
+        if let Ok(entry) = get_entry(NVIDIA_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    let res = client.post("https://integrate.api.nvidia.com/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
+                        "model": "poolside/laguna-xs-2.1",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 1024
+                    })).send().await;
+
+                    if let Ok(response) = res {
+                        if response.status().is_success() {
+                            if let Ok(body) = response.json::<Completion>().await {
+                                if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                                    add_session_dialogue("Interviewer", question);
+                                    add_session_dialogue("Candidate", &text);
+                                    return Ok(text);
+                                }
                             }
                         }
                     }
@@ -406,26 +653,40 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
         }
     }
 
-    // 5. NVIDIA FALLBACK
-    if let Ok(key) = get_entry(NVIDIA_ACCOUNT)?.get_password() {
-        if !key.trim().is_empty() {
-            let res = client.post("https://integrate.api.nvidia.com/v1/chat/completions").bearer_auth(key.trim()).json(&json!({
-                "model": "poolside/laguna-xs-2.1",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 1024
-            })).send().await;
+    // 6. AUTOMATED FALLBACK TO META MUSE SPARK (If primary provider failed)
+    if active != "meta" {
+        if let Ok(entry) = get_entry(META_ACCOUNT) {
+            if let Ok(meta_key) = entry.get_password() {
+                if !meta_key.trim().is_empty() {
+                    if let Ok(text) = try_meta_chat(&client, &meta_key, system_prompt, &full_context, question).await {
+                        add_session_dialogue("Interviewer", question);
+                        add_session_dialogue("Candidate", &text);
+                        return Ok(text);
+                    }
+                }
+            }
+        }
+    }
 
-            if let Ok(response) = res {
-                if response.status().is_success() {
-                    if let Ok(body) = response.json::<Completion>().await {
-                        if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
-                            add_session_dialogue("Interviewer", question);
-                            add_session_dialogue("Candidate", &text);
-                            return Ok(text);
+    // 7. FINAL FALLBACK TO GEMINI (If Meta was active and failed)
+    if active == "meta" {
+        if let Ok(entry) = get_entry(GEMINI_ACCOUNT) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
+                    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={}", key.trim());
+                    if let Ok(res) = client.post(&url).json(&json!({
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}
+                    })).send().await {
+                        if res.status().is_success() {
+                            if let Ok(body) = res.json::<GeminiResponse>().await {
+                                if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
+                                    add_session_dialogue("Interviewer", question);
+                                    add_session_dialogue("Candidate", &text);
+                                    return Ok(text);
+                                }
+                            }
                         }
                     }
                 }
@@ -477,6 +738,13 @@ mod tests {
         let context = format_session_context();
         assert!(!context.contains("Question 1\n"));
         assert!(context.contains("Question 15"));
+    }
+
+    #[test]
+    fn live_gemini_vision_works() {
+        let tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        let res = tauri::async_runtime::block_on(analyze_image("What color is this tiny pixel?".into(), tiny_png.into()));
+        assert!(res.is_ok(), "Vision test failed: {}", res.err().unwrap_or_default());
     }
 
     #[test]
