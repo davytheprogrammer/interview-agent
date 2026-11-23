@@ -97,13 +97,13 @@ fn next_turn(state: &mut Inner) -> Option<(String, String)> {
 }
 fn meeting_question(text: &str) -> String {
     format!(
-        "You are an expert interview and meeting assistant whispering answers in real-time to the candidate. \
-        The speech below was just spoken by the interviewer or meeting participant. \
-        Give a direct, natural, confident, and professional response that the user can say out loud right now. \
-        Do NOT repeat or paraphrase the question in your response. Jump straight into the answer. \
-        Sound like an articulate human, not an AI bot. \
-        Never refuse or say NO_QUESTION for small talk, casual questions, or greetings (like 'How's your day going?', 'Tell me about yourself', etc.)—always provide a friendly, natural answer. \
-        Only return NO_QUESTION if the audio is pure background noise or someone just clearing their throat.\n\n\
+        "You are an expert real-time interview co-pilot whispering direct answers to the candidate. \
+        The speech below was just spoken by the interviewer. \
+        Provide an ultra-concise, precise, and confident response (1 to 3 crisp sentences maximum) that the candidate can speak aloud right now. \
+        Be direct and punchy: give the exact core answer first. \
+        Do NOT over-explain, do NOT ramble, and do NOT add unnecessary background theory or filler unless specifically asked. \
+        Do NOT repeat or paraphrase the question. Jump straight into the answer. \
+        Sound like an articulate, senior professional speaking naturally, not an AI essayist.\n\n\
         Speech heard: \"{text}\""
     )
 }

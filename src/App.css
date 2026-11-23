@@ -18,3 +18,32 @@
 .teleprompter-placeholder{color:#64748b;font-size:14px;font-style:italic}
 .teleprompter-heard{margin-top:12px;padding-top:10px;border-top:1px solid #2e303d;font-size:12px;color:#94a3b8}
 .teleprompter-heard strong{color:#cbd5e1}
+
+/* Silent Visual Monitor Styles */
+.listen-pill.vision-snap-btn{background:#7c3aed;color:#fff;border:0;border-radius:20px;padding:6px 14px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px}
+.listen-pill.vision-snap-btn:hover{background:#6d28d9}
+.listen-pill.vision-snap-btn:disabled{opacity:0.6;cursor:not-allowed}
+
+.vision-card{margin-top:16px;background:#1e2029;border:1px solid #363847;border-radius:12px;padding:16px}
+.vision-capture-btn{width:100%;background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;border:0;border-radius:10px;padding:14px;font-size:13px;font-weight:800;letter-spacing:.02em;box-shadow:0 4px 14px rgba(124,58,237,0.4);transition:all 0.2s}
+.vision-capture-btn:hover{background:linear-gradient(135deg,#6d28d9,#4338ca)}
+.vision-capture-btn:disabled{opacity:0.6;cursor:not-allowed}
+
+.preset-container{margin-top:14px}
+.preset-label{display:block;font-size:11px;font-weight:700;color:#94a3b8;margin-bottom:8px}
+.preset-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.preset-grid button{background:#282a36;color:#e2e8f0;border:1px solid #3d4152;border-radius:8px;padding:8px 10px;font-size:11px;font-weight:600;text-align:left;transition:all 0.15s}
+.preset-grid button:hover{background:#373a4a;border-color:#6366f1}
+.preset-grid button:disabled{opacity:0.5;cursor:not-allowed}
+
+.vision-status{color:#a5b4fc;font-size:12px;margin-top:12px;font-style:italic}
+.vision-preview-card{margin-top:14px;border:1px solid #3b3f52;border-radius:10px;overflow:hidden;background:#14151c}
+.preview-header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#20222e;font-size:11px;color:#94a3b8;border-bottom:1px solid #313545}
+.vision-preview-card img{display:block;width:100%;max-height:220px;object-fit:contain}
+
+.vision-callout{background:#1e1f2b;border:1px solid #6366f1;border-radius:10px;padding:14px;margin-top:14px}
+.callout-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.callout-header strong{font-size:13px;color:#e0e7ff}
+.copy-btn{background:#312e81;color:#c7d2fe;border:1px solid #4338ca;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700}
+.copy-btn:hover{background:#3730a3}
+

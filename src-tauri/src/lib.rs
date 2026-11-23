@@ -2,6 +2,7 @@ mod storage;
 mod provider;
 mod transcription;
 mod platform;
+mod screen;
 use storage::{Session, Store};
 use tauri::{Manager, State};
 use std::{sync::Mutex, time::{Duration, Instant}};
@@ -76,8 +77,14 @@ fn disarm_microphone_test(permission: State<'_, MicrophonePermission>) {
 struct AudioAvailability { available: bool, description: String, native_microphone: bool }
 
 #[tauri::command]
-async fn capture_screen_region() -> Result<String,String> {
- #[cfg(target_os="linux")]
+async fn capture_screen_region() -> Result<String, String> {
+ #[cfg(target_os = "windows")]
+ {
+  tauri::async_runtime::spawn_blocking(screen::capture_screen_silent)
+   .await
+   .map_err(|_| "Screen capture task failed.".to_string())?
+ }
+ #[cfg(target_os = "linux")]
  {
   tauri::async_runtime::spawn_blocking(|| {
    use std::{process::{Command,Stdio},time::{SystemTime,UNIX_EPOCH}};
@@ -92,8 +99,8 @@ async fn capture_screen_region() -> Result<String,String> {
    Ok(format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes)))
   }).await.map_err(|_|"Screenshot capture failed.")?
  }
- #[cfg(not(target_os="linux"))]
- { Err("Use the image chooser to select a screenshot on this platform.".into()) }
+ #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+ { Err("Screen capture is not supported on this platform.".into()) }
 }
 
 #[cfg(target_os = "linux")]

@@ -92,28 +92,92 @@ pub fn delete_api_key() -> Result<(), String> { let _ = get_entry(NVIDIA_ACCOUNT
 #[tauri::command]
 pub async fn analyze_image(question: String, image_data_url: String) -> Result<String, String> {
     let question = question.trim();
-    if question.is_empty() || question.len() > 4000 { return Err("Enter a short question about this image.".into()); }
+    if question.is_empty() || question.len() > 8000 { return Err("Enter a short question about this screen.".into()); }
     if image_data_url.len() > 18_000_000 || !(image_data_url.starts_with("data:image/png;base64,") || image_data_url.starts_with("data:image/jpeg;base64,") || image_data_url.starts_with("data:image/webp;base64,")) {
-        return Err("Choose a PNG, JPEG, or WebP image under 12 MB.".into());
+        return Err("Invalid image data captured.".into());
     }
-    let key = get_entry(META_ACCOUNT)?.get_password().map_err(|_| "Save your Meta API key in Settings first.".to_string())?;
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create the network connection.")?;
-    let concise_prompt = format!("Answer the user's question using only evidence visible in the screenshot. Be precise and concise: give the direct answer first, then at most two short supporting details. Do not guess obscured or unreadable content; say clearly when the screenshot does not provide enough information.\n\nUser question: {question}");
-    let response = client.post("https://api.meta.ai/v1/responses").bearer_auth(key).json(&json!({
-        "model": "muse-spark-1.3-contributor",
-        "max_output_tokens": 500,
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": concise_prompt}, {"type": "input_image", "image_url": image_data_url}]
-        }]
-    })).send().await.map_err(|e| if e.is_timeout() { "Image analysis timed out." } else { "Could not reach Meta Model API." })?;
 
-    if !response.status().is_success() {
-        return Err("Meta rejected the image request. Check account and model access.".into());
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create the network connection.")?;
+    let active = get_active_provider().unwrap_or_else(|_| "gemini".into());
+
+    let visual_prompt = format!(
+        "You are an expert visual technical interview co-pilot. \
+        The user has captured their screen silently for your instant visual analysis. \
+        Analyze the screenshot and give a direct, precise, and concise solution. \
+        If code is shown: pinpoint the exact issue and provide the clean 1-line or concise fix. \
+        If a problem statement is shown: give the direct optimal algorithm and concise code. \
+        If an architecture diagram is shown: state the core design points in 2-3 brief bullet points. \
+        Do NOT over-explain or write essay filler. Jump straight into the solution.\n\n\
+        User Question/Request: {question}"
+    );
+
+    // 1. Try GEMINI VISION first if active is gemini or if gemini key exists
+    let has_gemini = has_provider_key("gemini".into()).unwrap_or(false);
+    let has_meta = has_meta_api_key().unwrap_or(false);
+
+    if (active == "gemini" && has_gemini) || (has_gemini && !has_meta) {
+        if let Ok(key) = get_entry(GEMINI_ACCOUNT)?.get_password() {
+            if !key.trim().is_empty() {
+                let (mime, raw_b64) = if let Some(s) = image_data_url.strip_prefix("data:image/jpeg;base64,") {
+                    ("image/jpeg", s)
+                } else if let Some(s) = image_data_url.strip_prefix("data:image/png;base64,") {
+                    ("image/png", s)
+                } else if let Some(s) = image_data_url.strip_prefix("data:image/webp;base64,") {
+                    ("image/webp", s)
+                } else {
+                    ("image/jpeg", image_data_url.as_str())
+                };
+
+                let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", key.trim());
+                let res = client.post(&url).json(&json!({
+                    "contents": [{
+                        "parts": [
+                            {"text": visual_prompt},
+                            {"inline_data": {"mime_type": mime, "data": raw_b64}}
+                        ]
+                    }],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
+                })).send().await;
+
+                if let Ok(response) = res {
+                    if response.status().is_success() {
+                        if let Ok(body) = response.json::<GeminiResponse>().await {
+                            if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
+                                return Ok(text);
+                            }
+                        }
+                    } else {
+                        eprintln!("Gemini vision failed with status: {}", response.status());
+                    }
+                }
+            }
+        }
     }
-    let body: ResponsesReply = response.json().await.map_err(|_| "Meta returned an unexpected image-analysis response.")?;
-    body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()).ok_or_else(|| "Meta returned no image analysis.".into())
+
+    // 2. Try META MUSE SPARK VISION
+    if let Ok(key) = get_entry(META_ACCOUNT)?.get_password() {
+        if !key.trim().is_empty() {
+            let response = client.post("https://api.meta.ai/v1/responses").bearer_auth(key).json(&json!({
+                "model": "muse-spark-1.3-contributor",
+                "max_output_tokens": 800,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": visual_prompt}, {"type": "input_image", "image_url": image_data_url}]
+                }]
+            })).send().await.map_err(|e| if e.is_timeout() { "Visual analysis timed out." } else { "Could not reach Meta Model API." })?;
+
+            if response.status().is_success() {
+                if let Ok(body) = response.json::<ResponsesReply>().await {
+                    if let Some(text) = body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()) {
+                        return Ok(text);
+                    }
+                }
+            }
+        }
+    }
+
+    Err("Add your Gemini or Meta API key in Settings to analyze your screen.".into())
 }
 
 #[derive(Deserialize)] struct Completion { choices: Vec<Choice> }
@@ -137,8 +201,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create network client.".to_string())?;
 
     let system_prompt = match mode {
-        AskMode::Meeting => "You are an expert real-time interview co-pilot whispering answers in real-time to the candidate. Output ONLY the direct first-person answer the candidate should speak aloud immediately. Do NOT repeat or quote the question. Do NOT include greetings or preamble like 'Sure' or 'Here is'. Jump straight into the answer. Sound articulate, natural, confident, and professional.",
-        AskMode::Coding => "You are an expert coding interview assistant. Provide a clean, accurate, and direct solution with code examples where relevant. No fluff.",
+        AskMode::Meeting => "You are an expert real-time interview co-pilot whispering direct answers to the candidate. Output ONLY the direct first-person answer the candidate should speak aloud right now (1 to 3 crisp, confident sentences maximum). Jump straight into the answer without preamble or echoing the question. Be ultra-precise, articulate, and punchy. No fluff, no essays, no over-explaining.",
+        AskMode::Coding => "You are an expert coding interview assistant. Provide a clean, accurate, and direct solution with code examples where relevant. Be precise and avoid unnecessary filler.",
     };
 
     // 1. GEMINI (Fastest, ultra-low latency)

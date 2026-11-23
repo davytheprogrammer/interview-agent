@@ -8,7 +8,7 @@ function App() {
   const [context, setContext] = useState('');
   const [showContext, setShowContext] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [tab, setTab] = useState<'meeting' | 'coding' | 'screenshot'>('meeting');
+  const [tab, setTab] = useState<'meeting' | 'coding' | 'vision'>('meeting');
   const [apiKey, setApiKey] = useState('');
   const [hasKey, setHasKey] = useState(false);
   const [metaKey, setMetaKey] = useState('');
@@ -16,7 +16,7 @@ function App() {
   const [imageAnswer, setImageAnswer] = useState('');
   const [imagePreview, setImagePreview] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
-  const [imageQuestion, setImageQuestion] = useState('Describe this screenshot and help me understand it.');
+  const [imageQuestion, setImageQuestion] = useState('Analyze what is visible on this screen and provide the direct, actionable solution.');
   const [answer, setAnswer] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -98,9 +98,22 @@ function App() {
   useEffect(() => { void refreshMetaKey(); }, []);
   const saveKey = async () => { try { await invoke('save_api_key', { key: apiKey }); setApiKey(''); await refreshKey(); setMessage('Key saved securely on this device.'); } catch (e) { setMessage(String(e)); } };
   const saveMetaKey = async () => { try { await invoke('save_meta_api_key', { key: metaKey }); setMetaKey(''); await refreshMetaKey(); setMessage('Meta key saved securely on this device.'); } catch(e) { setMessage(String(e)); } };
-  const submitImage = async (dataUrl:string) => { setImagePreview(dataUrl); setImageAnswer(''); setImageBusy(true); setMessage(''); try { const result=await invoke<string>('analyze_image',{question:imageQuestion,imageDataUrl:dataUrl}); setImageAnswer(result); } catch(e) { setMessage(String(e)); } finally { setImageBusy(false); } };
-  const analyzeImage = async (file?: File) => { if(!file) return; if(file.size>12*1024*1024) { setMessage('Choose an image smaller than 12 MB.'); return; } const reader=new FileReader(); reader.onload=()=>void submitImage(String(reader.result)); reader.onerror=()=>setMessage('Could not read that image.'); reader.readAsDataURL(file); };
-  const snipScreen = async () => { setMessage(''); try { const data=await invoke<string>('capture_screen_region'); await submitImage(data); } catch(e) { setMessage(String(e)); } };
+  const captureAndAnalyze = async (customPrompt?: string) => {
+    setMessage('');
+    setImageBusy(true);
+    setImageAnswer('');
+    try {
+      const data = await invoke<string>('capture_screen_region');
+      setImagePreview(data);
+      const q = (customPrompt || imageQuestion).trim();
+      const result = await invoke<string>('analyze_image', { question: q, imageDataUrl: data });
+      setImageAnswer(result);
+    } catch(e) {
+      setMessage(String(e));
+    } finally {
+      setImageBusy(false);
+    }
+  };
   const ask = async (test = false) => { setBusy(true); setMessage(''); if (!test) setAnswer(''); try { const result = await invoke<string>('ask_nvidia', { question: test ? 'Reply with OK.' : question, context: test ? '' : context, mode: test ? 'meeting' : 'coding' }); if (test) setMessage('Connection successful.'); else setAnswer(result); } catch (e) { setMessage(String(e)); } finally { setBusy(false); } };
   const [audio, setAudio] = useState<{available: boolean; description: string; native_microphone: boolean} | null>(null);
   const refreshAudio = async () => { setAudio(null); try { setAudio(await invoke<{available: boolean; description: string; native_microphone: boolean}>('system_audio_availability')); } catch { setAudio({available:false,native_microphone:false,description:'Audio source check is unavailable. Open the desktop application to check.'}); } };
@@ -157,7 +170,7 @@ function App() {
       <p className="privacy">While capture is active, live audio is streamed to Meta for transcription; completed meeting speech is sent to your configured text assistant. Images are sent to Meta only when you select one for analysis. No raw audio is saved.</p>{recording !== 'idle' && <button className="listen" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>■ Stop capture</button>}{message && <p role="status" className="message">{message}</p>}
     </section> : <>
       <div className="statusline" role="status" aria-live="polite"><span className={'status-dot ' + (recording === 'recording' ? 'live' : '')}/> <span>{recording === 'recording' ? (captureMode === 'computer' ? 'Listening to computer audio' : 'Microphone recording') : recording === 'starting' ? 'Starting audio…' : recording === 'stopping' ? 'Stopping audio…' : 'Not listening'}</span>{recording !== 'idle' ? <button className="text-button" onClick={() => void stopRecording()} disabled={recording === 'stopping'}>Privacy stop</button> : <button className="text-button" onClick={() => setShowSettings(true)}>Set up audio & AI →</button>}</div>
-      <nav className="tabs" aria-label="Assistant area"><button className={tab === 'meeting' ? 'selected' : ''} aria-current={tab === 'meeting' ? 'page' : undefined} onClick={() => setTab('meeting')}>◉ &nbsp; Meeting</button><button className={tab === 'coding' ? 'selected' : ''} aria-current={tab === 'coding' ? 'page' : undefined} onClick={() => setTab('coding')}>⌘ &nbsp; Coding</button><button className={tab === 'screenshot' ? 'selected' : ''} aria-current={tab === 'screenshot' ? 'page' : undefined} onClick={() => setTab('screenshot')}>▧ &nbsp; Screenshot</button></nav>
+      <nav className="tabs" aria-label="Assistant area"><button className={tab === 'meeting' ? 'selected' : ''} aria-current={tab === 'meeting' ? 'page' : undefined} onClick={() => setTab('meeting')}>◉ &nbsp; Meeting</button><button className={tab === 'coding' ? 'selected' : ''} aria-current={tab === 'coding' ? 'page' : undefined} onClick={() => setTab('coding')}>⌘ &nbsp; Coding</button><button className={tab === 'vision' ? 'selected' : ''} aria-current={tab === 'vision' ? 'page' : undefined} onClick={() => setTab('vision')}>👁 &nbsp; Visual Monitor</button></nav>
       {tab === 'meeting' ?
       <section className="body meeting-landscape">
         {/* Top-level prominent suggestion banner right at eye level beneath the camera */}
@@ -165,14 +178,41 @@ function App() {
           <div className="teleprompter-header">
             <span className="teleprompter-badge">AI REAL-TIME DRAFT</span>
             <span className="teleprompter-status">{meetingProgress}</span>
-            {recording === 'idle' ? (
-              <button className="listen-pill" disabled={!audio?.available || !hasMetaKey} onClick={() => void startRecording('computer')}>▶ Start Listening</button>
-            ) : (
-              <button className="listen-pill active" onClick={() => void stopRecording()}>■ Stop Capture</button>
-            )}
+            <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
+              <button
+                className="listen-pill vision-snap-btn"
+                title="Silent Screen Sense (Captures screen silently in RAM and asks AI without focus loss)"
+                disabled={imageBusy}
+                onClick={async () => {
+                  setMessage('Silently scanning screen in memory...');
+                  try {
+                    const data = await invoke<string>('capture_screen_region');
+                    setImagePreview(data);
+                    setImageBusy(true);
+                    const prompt = meetingText
+                      ? `The interviewer asked: "${meetingText}". Using what is visible on screen, provide the direct answer.`
+                      : 'Analyze what is shown on screen and provide the direct, actionable solution.';
+                    const res = await invoke<string>('analyze_image', { question: prompt, imageDataUrl: data });
+                    setMeetingSuggestion(res);
+                    setMeetingProgress('Visual answer ready');
+                  } catch(e) {
+                    setMessage(String(e));
+                  } finally {
+                    setImageBusy(false);
+                  }
+                }}
+              >
+                {imageBusy ? '👁 Scanning…' : '👁 Visual Snap'}
+              </button>
+              {recording === 'idle' ? (
+                <button className="listen-pill" disabled={!audio?.available || !hasMetaKey} onClick={() => void startRecording('computer')}>▶ Start Listening</button>
+              ) : (
+                <button className="listen-pill active" onClick={() => void stopRecording()}>■ Stop Capture</button>
+              )}
+            </div>
           </div>
           <div className="teleprompter-text">
-            {meetingSuggestion || <span className="teleprompter-placeholder">Listening for interviewer questions... Suggested answers appear here directly below your webcam so your eye contact remains natural.</span>}
+            {meetingSuggestion || <span className="teleprompter-placeholder">Listening for interviewer questions... Suggested answers appear here directly below your webcam so your eye contact remains natural. Use "👁 Visual Snap" if the interviewer shares a diagram, slide, or code.</span>}
           </div>
           {(partial || meetingText) && (
             <div className="teleprompter-heard">
@@ -190,10 +230,50 @@ function App() {
         <p className="source">Your question and context are sent to the configured text assistant when you ask. Review generated code before using it.</p>
         {message && <p role="alert" className="message">{message}</p>}{answer && <div className="callout"><span aria-hidden="true">✳</span><p><strong>AI-generated answer</strong><br/>{answer}</p></div>}
         {!hasKey && <div className="callout"><span aria-hidden="true">✳</span><p><strong>Setup required.</strong><br/>Add your NVIDIA key to get answers. <button className="inline" onClick={() => setShowSettings(true)}>View setup</button></p></div>}
-      </section> : <section className="body screenshot-page">
-        <span className="eyebrow">SCREENSHOT ASSISTANT</span><h1>Point, snip,<br/><em>get an answer.</em></h1><p className="intro">Select any region on your screen. The screenshot is sent for image analysis only after you choose to capture it.</p>
-        <div className="screenshot-card"><label htmlFor="image-question">What do you want to know?</label><textarea id="image-question" value={imageQuestion} onChange={e=>setImageQuestion(e.target.value)} rows={2}/><div className="screenshot-actions"><button className="ask" onClick={()=>void snipScreen()} disabled={!hasMetaKey||imageBusy}>⌖ &nbsp; Snip screen <span>↗</span></button><label className="context-toggle" htmlFor="screenshot-file">Choose image</label><input id="screenshot-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>void analyzeImage(e.target.files?.[0])} disabled={!hasMetaKey||imageBusy}/></div>{!hasMetaKey&&<p className="source">Add your Meta API key in Settings to analyze screenshots.</p>}{imagePreview&&<div className="image-result"><img src={imagePreview} alt="Selected screenshot region"/>{imageBusy&&<p role="status">Analyzing with Muse Spark…</p>}{imageAnswer&&<div className="callout"><span aria-hidden="true">✳</span><p><strong>Screenshot analysis</strong><br/>{imageAnswer}</p></div>}</div>}</div>
-        {message&&<p role="alert" className="message">{message}</p>}
+      </section> : <section className="body vision-page">
+        <span className="eyebrow">SILENT SCREEN MONITOR</span><h1>Visual<br/><em>Intelligence.</em></h1><p className="intro">Captures your screen directly from the GPU framebuffer in RAM in ~12ms. Zero screen dimming, zero overlays, and zero window focus loss (invisible to proctoring software & screen shares).</p>
+        <div className="vision-card">
+          <button className="vision-capture-btn" disabled={imageBusy} onClick={() => void captureAndAnalyze()}>
+            {imageBusy ? '⚡ Analyzing Screen in RAM…' : '⚡ Silent Screen Snap & Solve'}
+          </button>
+          
+          <div className="preset-container">
+            <span className="preset-label">Quick Analysis Presets:</span>
+            <div className="preset-grid">
+              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Solve the coding problem or challenge shown on screen. Give the complete, optimal solution with code.')}>🎯 Solve Problem</button>
+              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Identify the bug, syntax issue, or error in the code on screen, and explain how to fix it.')}>🔍 Debug & Fix Code</button>
+              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Explain the architecture, system design, or diagram shown on screen.')}>🏗️ Architecture</button>
+              <button disabled={imageBusy} onClick={() => void captureAndAnalyze('Analyze the code on screen. Give the optimal time and space complexity with a brief explanation.')}>⏱️ Complexity</button>
+            </div>
+          </div>
+
+          <label htmlFor="vision-question">Custom visual question (optional)</label>
+          <textarea id="vision-question" value={imageQuestion} onChange={e => setImageQuestion(e.target.value)} placeholder="Type what to look for on screen or leave as is..." rows={2}/>
+
+          {imageBusy && <p role="status" className="vision-status">⚡ Analyzing screen frame with Gemini / Meta Vision…</p>}
+
+          {imagePreview && (
+            <div className="vision-preview-card">
+              <div className="preview-header">
+                <span>In-Memory Frame Buffer</span>
+                <button className="text-button" onClick={() => { setImagePreview(''); setImageAnswer(''); }}>Clear</button>
+              </div>
+              <img src={imagePreview} alt="Silent screen frame" />
+            </div>
+          )}
+
+          {imageAnswer && (
+            <div className="callout vision-callout">
+              <div className="callout-header">
+                <span aria-hidden="true">✳</span>
+                <strong>AI Visual Solution</strong>
+                <button className="copy-btn" onClick={() => { navigator.clipboard.writeText(imageAnswer); setMessage('Solution copied to clipboard!'); }}>Copy</button>
+              </div>
+              <p>{imageAnswer}</p>
+            </div>
+          )}
+        </div>
+        {message && <p role="alert" className="message">{message}</p>}
       </section>}
       <footer><span>{recording === 'recording' ? (captureMode === 'computer' ? '● Computer audio active' : '● Microphone active') : recording === 'idle' ? '◌ No audio captured' : '◌ Audio changing state'}</span><span>{captureProtection?.supported && captureProtection.requested ? 'Capture exclusion requested — verify' : 'Window may appear in screen shares'}</span></footer>
     </>}
