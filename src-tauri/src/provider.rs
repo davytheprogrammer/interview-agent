@@ -152,7 +152,8 @@ Understand the interview context from what is shown on screen and provide a high
 - Architecture / System Design diagram: Identify key components and bottleneck points. State the data flow and practical scalability, caching, or consistency trade-offs in 2-4 clear, articulate bullet points.
 - Debugging / Code Snippet: Pinpoint the exact root cause of the bug or edge-case failure, and provide the concise 1-3 line fix.
 - Technical Question / Slides on screen: Answer the displayed prompt directly and professionally in the first person.
-Keep your response focused, intelligent, and natural. Speak directly to the technical solution without fluff, preamble, or generic chatbot disclaimers.";
+- Follow-ups & Refinements: When asked to refine, optimize, explain, or alter a previous answer, respond smoothly and naturally like a sharp, cool senior engineer having an effortless technical conversation. Be direct, clear, and insightful with zero robotic fluff or preamble.
+Keep your response focused, intelligent, natural, and cool. Speak directly to the technical solution without fluff, preamble, or generic chatbot disclaimers.";
 
 #[tauri::command]
 pub async fn analyze_image(question: String, image_data_url: String) -> Result<String, String> {

@@ -15,6 +15,8 @@ function App() {
   const [hasMetaKey, setHasMetaKey] = useState(false);
   const [imageAnswer, setImageAnswer] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
+  const [visualCustomPrompt, setVisualCustomPrompt] = useState('');
+  const [lastCapturedImage, setLastCapturedImage] = useState<string>('');
   const defaultVisualPrompt = 'Analyze what is visible on this screen and provide the direct, actionable solution.';
   const [answer, setAnswer] = useState('');
   const [message, setMessage] = useState('');
@@ -116,12 +118,38 @@ function App() {
   const captureAndAnalyze = async (customPrompt?: string) => {
     setMessage('');
     setImageBusy(true);
-    setImageAnswer('');
     try {
       const data = await invoke<string>('capture_screen_region');
-      const q = (customPrompt || defaultVisualPrompt).trim();
+      setLastCapturedImage(data);
+      const q = (customPrompt || visualCustomPrompt || defaultVisualPrompt).trim();
       const result = await invoke<string>('analyze_image', { question: q, imageDataUrl: data });
       setImageAnswer(result);
+    } catch(e) {
+      setMessage(String(e));
+    } finally {
+      setImageBusy(false);
+    }
+  };
+
+  const refineLastCapture = async (promptOverride?: string) => {
+    const q = (promptOverride || visualCustomPrompt).trim();
+    if (!q) {
+      setMessage('Type a question or refinement first.');
+      return;
+    }
+    setMessage('');
+    setImageBusy(true);
+    try {
+      let result = '';
+      if (lastCapturedImage) {
+        result = await invoke<string>('analyze_image', { question: q, imageDataUrl: lastCapturedImage });
+      } else {
+        const data = await invoke<string>('capture_screen_region');
+        setLastCapturedImage(data);
+        result = await invoke<string>('analyze_image', { question: q, imageDataUrl: data });
+      }
+      setImageAnswer(result);
+      setVisualCustomPrompt('');
     } catch(e) {
       setMessage(String(e));
     } finally {
@@ -263,7 +291,7 @@ function App() {
             <div className="vision-meta">
               <span className="vision-badge">AI VISUAL TELEPROMPTER</span>
               <span className="vision-status-text">
-                {imageBusy ? '⚡ Capturing & analyzing screen in RAM…' : imageAnswer ? 'Visual solution ready' : 'Ready to capture screen'}
+                {imageBusy ? '⚡ Analyzing in RAM…' : imageAnswer ? 'Visual solution ready' : 'Ready to capture screen'}
               </span>
             </div>
             <div className="vision-controls">
@@ -291,10 +319,62 @@ function App() {
               </>
             ) : (
               <span className="teleprompter-placeholder">
-                Click "⚡ Snap Screen" or a preset to silently analyze your screen in ~300ms without window focus loss or screen flickering. Direct answers appear here at eye level.
+                Click "⚡ Snap Screen" or type a question below to silently analyze your screen in ~300ms without window focus loss or screen flickering. Direct answers appear here at eye level.
               </span>
             )}
           </div>
+
+          {/* Refinement & Custom Question Input Bar */}
+          <div className="vision-input-bar">
+            <input
+              type="text"
+              className="vision-input-field"
+              value={visualCustomPrompt}
+              onChange={e => setVisualCustomPrompt(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (lastCapturedImage) {
+                    void refineLastCapture();
+                  } else {
+                    void captureAndAnalyze();
+                  }
+                }
+              }}
+              placeholder={imageAnswer ? "Ask a follow-up to refine (e.g. 'Optimize space to O(1)', 'Convert to Python')..." : "Ask a specific question about what's on screen..."}
+              disabled={imageBusy}
+            />
+            {imageAnswer && (
+              <button
+                className="vision-refine-btn"
+                disabled={imageBusy || !visualCustomPrompt.trim()}
+                onClick={() => void refineLastCapture()}
+                title="Refine the current solution without re-snapping the screen"
+              >
+                💬 Refine
+              </button>
+            )}
+            <button
+              className="vision-snap-ask-btn"
+              disabled={imageBusy}
+              onClick={() => void captureAndAnalyze()}
+              title="Capture a new screen view and ask your question"
+            >
+              ⚡ Snap & Ask
+            </button>
+          </div>
+
+          {/* Quick refinement chips when an answer is present */}
+          {imageAnswer && !imageBusy && (
+            <div className="vision-chips-row">
+              <span style={{fontSize:'10px',color:'#64748b',fontWeight:700,letterSpacing:'0.05em'}}>QUICK REFINE:</span>
+              <button className="vision-chip" onClick={() => void refineLastCapture('Optimize the time and space complexity of this solution to the absolute optimal.')}>✨ Optimize</button>
+              <button className="vision-chip" onClick={() => void refineLastCapture('Rewrite this solution in clean Python 3.')}>🐍 In Python</button>
+              <button className="vision-chip" onClick={() => void refineLastCapture('Rewrite this solution in modern TypeScript / JavaScript.')}>⚡ In TypeScript</button>
+              <button className="vision-chip" onClick={() => void refineLastCapture('What are the critical edge cases (e.g. null, empty, duplicates, overflow) to watch out for?')}>🛡️ Edge Cases</button>
+              <button className="vision-chip" onClick={() => void refineLastCapture('Give me a 3-sentence natural spoken summary of this solution that I can speak aloud to the interviewer.')}>🗣️ Spoken Pitch</button>
+            </div>
+          )}
         </div>
         {message && <p role="alert" className="message" style={{margin:'6px 0 0',textAlign:'center'}}>{message}</p>}
       </section>}
