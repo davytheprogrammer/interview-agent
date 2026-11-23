@@ -26,42 +26,44 @@ pub fn add_session_dialogue(role: &str, content: &str) {
     if trimmed.is_empty() {
         return;
     }
-    if let Ok(mut mem) = SESSION_MEMORY.lock() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        mem.push_back(DialogueTurn {
-            role: role.to_string(),
-            content: trimmed.to_string(),
-            timestamp_ms: stamp,
-        });
-        while mem.len() > 10 {
-            mem.pop_front();
-        }
+    // Cap individual turn at 4000 characters to prevent runaway token explosion
+    let capped = if trimmed.len() > 4000 {
+        &trimmed[..4000]
+    } else {
+        trimmed
+    };
+
+    let mut mem = SESSION_MEMORY.lock().unwrap_or_else(|p| p.into_inner());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    mem.push_back(DialogueTurn {
+        role: role.to_string(),
+        content: capped.to_string(),
+        timestamp_ms: stamp,
+    });
+    while mem.len() > 10 {
+        mem.pop_front();
     }
 }
 
 pub fn format_session_context() -> String {
-    if let Ok(mem) = SESSION_MEMORY.lock() {
-        if mem.is_empty() {
-            return String::new();
-        }
-        let turns: Vec<String> = mem
-            .iter()
-            .map(|t| format!("{}: {}", t.role, t.content))
-            .collect();
-        format!("\n\n[Recent Interview History & Dialogue Memory]:\n{}", turns.join("\n\n"))
-    } else {
-        String::new()
+    let mem = SESSION_MEMORY.lock().unwrap_or_else(|p| p.into_inner());
+    if mem.is_empty() {
+        return String::new();
     }
+    let turns: Vec<String> = mem
+        .iter()
+        .map(|t| format!("{}: {}", t.role, t.content))
+        .collect();
+    format!("\n\n[Recent Interview History & Dialogue Memory]:\n{}", turns.join("\n\n"))
 }
 
 #[tauri::command]
 pub fn clear_session_memory() -> Result<(), String> {
-    if let Ok(mut mem) = SESSION_MEMORY.lock() {
-        mem.clear();
-    }
+    let mut mem = SESSION_MEMORY.lock().unwrap_or_else(|p| p.into_inner());
+    mem.clear();
     Ok(())
 }
 
@@ -497,7 +499,15 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
     }
 
     let active = get_active_provider().unwrap_or_else(|_| "gemini".into());
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create network client.".to_string())?;
+    let timeout_secs = match mode {
+        AskMode::Meeting => 8,
+        AskMode::Coding => 15,
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not create network client.".to_string())?;
 
     let system_prompt = match mode {
         AskMode::Meeting => MEETING_SYSTEM_PROMPT,

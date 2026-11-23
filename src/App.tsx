@@ -252,6 +252,7 @@ function App() {
                     setMeetingProgress('Visual answer ready');
                   } catch(e) {
                     setMessage(String(e));
+                    setMeetingProgress('Visual scan failed');
                   } finally {
                     setImageBusy(false);
                   }
@@ -314,7 +315,21 @@ function App() {
               </span>
             ) : imageAnswer ? (
               <>
-                <button className="vision-copy-floating" onClick={() => { navigator.clipboard.writeText(imageAnswer); setMessage('Copied to clipboard!'); }}>Copy</button>
+                {imageAnswer.includes('```') ? (
+                  <>
+                    <button className="vision-copy-floating" onClick={() => {
+                      const match = imageAnswer.match(/```(?:\w+)?\n([\s\S]*?)```/);
+                      navigator.clipboard.writeText(match ? match[1].trim() : imageAnswer.trim());
+                      setMessage('Clean code copied to clipboard!');
+                    }}>📋 Copy Code</button>
+                    <button className="vision-copy-floating" style={{right:'95px'}} onClick={() => {
+                      navigator.clipboard.writeText(imageAnswer.trim());
+                      setMessage('Full answer copied to clipboard!');
+                    }}>Copy All</button>
+                  </>
+                ) : (
+                  <button className="vision-copy-floating" onClick={() => { navigator.clipboard.writeText(imageAnswer); setMessage('Copied to clipboard!'); }}>Copy</button>
+                )}
                 {imageAnswer}
               </>
             ) : (

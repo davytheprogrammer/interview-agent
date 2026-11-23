@@ -12,6 +12,7 @@ mod win {
     type HBITMAP = *mut c_void;
     type HGDIOBJ = *mut c_void;
     type HWND = *mut c_void;
+    type HMONITOR = *mut c_void;
 
     #[repr(C)]
     struct GdiplusStartupInput {
@@ -29,9 +30,34 @@ mod win {
         data4: [u8; 8],
     }
 
+    #[repr(C)]
+    #[derive(Copy, Clone, Default)]
+    struct POINT {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Default)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct MONITORINFO {
+        cb_size: DWORD,
+        rc_monitor: RECT,
+        rc_work: RECT,
+        dw_flags: DWORD,
+    }
+
     const SRCCOPY: DWORD = 0x00CC0020;
     const SM_CXSCREEN: i32 = 0;
     const SM_CYSCREEN: i32 = 1;
+    const MONITOR_DEFAULTTONEAREST: DWORD = 2;
 
     // JPEG encoder CLSID: 557CF401-1A04-11D3-9A73-0000F81EF32E
     const CLSID_JPEG: GUID = GUID {
@@ -46,6 +72,9 @@ mod win {
         fn GetSystemMetrics(nIndex: i32) -> i32;
         fn GetDC(hWnd: HWND) -> HDC;
         fn ReleaseDC(hWnd: HWND, hDC: HDC) -> i32;
+        fn GetCursorPos(lpPoint: *mut POINT) -> BOOL;
+        fn MonitorFromPoint(pt: POINT, dwFlags: DWORD) -> HMONITOR;
+        fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *mut MONITORINFO) -> BOOL;
     }
 
     #[link(name = "gdi32")]
@@ -95,8 +124,32 @@ mod win {
                 return Err("Failed to initialize Windows graphics pipeline.".into());
             }
 
-            let width = GetSystemMetrics(SM_CXSCREEN);
-            let height = GetSystemMetrics(SM_CYSCREEN);
+            // Detect the monitor where the candidate's mouse/focus is located
+            // This ensures multi-monitor setups (e.g. laptop + external monitor with LeetCode/IDE) are captured accurately!
+            let mut pt = POINT::default();
+            let mut capture_x = 0;
+            let mut capture_y = 0;
+            let mut width = GetSystemMetrics(SM_CXSCREEN);
+            let mut height = GetSystemMetrics(SM_CYSCREEN);
+
+            if GetCursorPos(&mut pt) != 0 {
+                let h_mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                if !h_mon.is_null() {
+                    let mut mi: MONITORINFO = std::mem::zeroed();
+                    mi.cb_size = std::mem::size_of::<MONITORINFO>() as DWORD;
+                    if GetMonitorInfoW(h_mon, &mut mi) != 0 {
+                        let mon_w = mi.rc_monitor.right - mi.rc_monitor.left;
+                        let mon_h = mi.rc_monitor.bottom - mi.rc_monitor.top;
+                        if mon_w > 0 && mon_h > 0 {
+                            capture_x = mi.rc_monitor.left;
+                            capture_y = mi.rc_monitor.top;
+                            width = mon_w;
+                            height = mon_h;
+                        }
+                    }
+                }
+            }
+
             if width <= 0 || height <= 0 {
                 GdiplusShutdown(token);
                 return Err("Invalid screen metrics.".into());
@@ -113,7 +166,7 @@ mod win {
             let old_bmp = SelectObject(hdc_mem, hbitmap);
 
             // Silent BitBlt directly from DWM framebuffer in RAM (zero focus shift, zero flicker)
-            let blt_res = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+            let blt_res = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, capture_x, capture_y, SRCCOPY);
 
             let mut gp_bitmap: *mut c_void = std::ptr::null_mut();
             let mut stream: *mut c_void = std::ptr::null_mut();
@@ -144,7 +197,14 @@ mod win {
                 result_base64 = Err(format!("Capture failed: blt={blt_res}, bmp_st={bmp_status}, stm_st={stream_status}, save_st={save_status}"));
             }
 
-            // Cleanup GDI and COM resources
+            // Cleanup COM IStream interface to prevent memory leaks across repeated snaps
+            if !stream.is_null() {
+                let vtbl = *(stream as *mut *mut extern "system" fn(*mut c_void) -> u32);
+                let release_fn = *vtbl.offset(2);
+                release_fn(stream);
+            }
+
+            // Cleanup GDI and GDI+ resources
             if !gp_bitmap.is_null() {
                 GdipDisposeImage(gp_bitmap);
             }
