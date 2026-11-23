@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::VecDeque;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 const SERVICE: &str = "com.raxley.livecompanion";
@@ -9,6 +11,59 @@ const GEMINI_ACCOUNT: &str = "gemini-api-key";
 const TOGETHER_ACCOUNT: &str = "together-api-key";
 const RAX_ACCOUNT: &str = "rax-api-key";
 const ACTIVE_PROVIDER_ACCOUNT: &str = "active-ai-provider";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DialogueTurn {
+    pub role: String,
+    pub content: String,
+    pub timestamp_ms: u64,
+}
+
+static SESSION_MEMORY: LazyLock<Mutex<VecDeque<DialogueTurn>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+pub fn add_session_dialogue(role: &str, content: &str) {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Ok(mut mem) = SESSION_MEMORY.lock() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        mem.push_back(DialogueTurn {
+            role: role.to_string(),
+            content: trimmed.to_string(),
+            timestamp_ms: stamp,
+        });
+        while mem.len() > 10 {
+            mem.pop_front();
+        }
+    }
+}
+
+pub fn format_session_context() -> String {
+    if let Ok(mem) = SESSION_MEMORY.lock() {
+        if mem.is_empty() {
+            return String::new();
+        }
+        let turns: Vec<String> = mem
+            .iter()
+            .map(|t| format!("{}: {}", t.role, t.content))
+            .collect();
+        format!("\n\n[Recent Interview History & Dialogue Memory]:\n{}", turns.join("\n\n"))
+    } else {
+        String::new()
+    }
+}
+
+#[tauri::command]
+pub fn clear_session_memory() -> Result<(), String> {
+    if let Ok(mut mem) = SESSION_MEMORY.lock() {
+        mem.clear();
+    }
+    Ok(())
+}
 
 pub fn status_error(code: u16) -> String {
     match code {
@@ -89,6 +144,16 @@ pub fn delete_api_key() -> Result<(), String> { let _ = get_entry(NVIDIA_ACCOUNT
 #[derive(Deserialize)] struct ResponsesOutput { content: Option<Vec<ResponsesContent>> }
 #[derive(Deserialize)] struct ResponsesContent { text: Option<String> }
 
+const VISUAL_SYSTEM_PROMPT: &str = "\
+You are an expert technical co-pilot supporting a candidate during a live technical job interview. \
+The user has captured their screen silently for your instant visual analysis. \
+Understand the interview context from what is shown on screen and provide a high-IQ, practical, natural answer:
+- Coding / LeetCode challenge: Identify the core algorithmic pattern (e.g. two pointers, monotonic stack, dynamic programming), state the optimal Time & Space complexity in Big-O, followed by clean, idiomatic code, and a brief 2-3 sentence natural explanation of the approach that the candidate can speak aloud to the interviewer.
+- Architecture / System Design diagram: Identify key components and bottleneck points. State the data flow and practical scalability, caching, or consistency trade-offs in 2-4 clear, articulate bullet points.
+- Debugging / Code Snippet: Pinpoint the exact root cause of the bug or edge-case failure, and provide the concise 1-3 line fix.
+- Technical Question / Slides on screen: Answer the displayed prompt directly and professionally in the first person.
+Keep your response focused, intelligent, and natural. Speak directly to the technical solution without fluff, preamble, or generic chatbot disclaimers.";
+
 #[tauri::command]
 pub async fn analyze_image(question: String, image_data_url: String) -> Result<String, String> {
     let question = question.trim();
@@ -99,16 +164,11 @@ pub async fn analyze_image(question: String, image_data_url: String) -> Result<S
 
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create the network connection.")?;
     let active = get_active_provider().unwrap_or_else(|_| "gemini".into());
+    let session_context = format_session_context();
 
     let visual_prompt = format!(
-        "You are an expert visual technical interview co-pilot. \
-        The user has captured their screen silently for your instant visual analysis. \
-        Analyze the screenshot and give a direct, precise, and concise solution. \
-        If code is shown: pinpoint the exact issue and provide the clean 1-line or concise fix. \
-        If a problem statement is shown: give the direct optimal algorithm and concise code. \
-        If an architecture diagram is shown: state the core design points in 2-3 brief bullet points. \
-        Do NOT over-explain or write essay filler. Jump straight into the solution.\n\n\
-        User Question/Request: {question}"
+        "{VISUAL_SYSTEM_PROMPT}{session_context}\n\n\
+        Screen Analysis Request / Interview Question: {question}"
     );
 
     // 1. Try GEMINI VISION first if active is gemini or if gemini key exists
@@ -143,6 +203,8 @@ pub async fn analyze_image(question: String, image_data_url: String) -> Result<S
                     if response.status().is_success() {
                         if let Ok(body) = response.json::<GeminiResponse>().await {
                             if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
+                                add_session_dialogue("Interviewer / Screen Context", question);
+                                add_session_dialogue("Candidate Solution", &text);
                                 return Ok(text);
                             }
                         }
@@ -170,6 +232,8 @@ pub async fn analyze_image(question: String, image_data_url: String) -> Result<S
             if response.status().is_success() {
                 if let Ok(body) = response.json::<ResponsesReply>().await {
                     if let Some(text) = body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()) {
+                        add_session_dialogue("Interviewer / Screen Context", question);
+                        add_session_dialogue("Candidate Solution", &text);
                         return Ok(text);
                     }
                 }
@@ -190,6 +254,18 @@ pub async fn analyze_image(question: String, image_data_url: String) -> Result<S
 #[derive(Deserialize)] struct GeminiContent { parts: Option<Vec<GeminiPart>> }
 #[derive(Deserialize)] struct GeminiPart { text: Option<String> }
 
+const MEETING_SYSTEM_PROMPT: &str = "\
+You are an expert interview co-pilot whispering spoken answers directly to a candidate in a live technical job interview. \
+You speak in the first person ('I', 'In my experience', 'My approach is...') as the candidate answering the interviewer. \
+Guidelines:
+- Natural, conversational flow: Sound like a sharp, articulate senior engineer having a real discussion—never sound robotic, canned, or like an AI assistant.
+- Balanced, reasonable depth: Do NOT clip your answer into a robotic one-sentence fragment, and do NOT deliver a 500-word lecture. Aim for 2 to 4 fluid, well-structured sentences (~20-30 seconds of spoken delivery).
+- Core structure: Give the direct answer/approach first, mention the practical real-world nuance or trade-off, and conclude cleanly.
+- Strict prohibitions: NEVER say 'Sure!', 'Certainly', 'As an AI', or echo the interviewer's question. Jump straight into the candidate's spoken response.";
+
+const CODING_SYSTEM_PROMPT: &str = "\
+You are an expert coding interview co-pilot assisting a candidate. Provide a clean, optimal solution with correct syntax, precise time and space complexity, and a natural 2-sentence walk-through of the key insight.";
+
 #[tauri::command]
 pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Result<String, String> {
     let question = question.trim();
@@ -201,8 +277,15 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create network client.".to_string())?;
 
     let system_prompt = match mode {
-        AskMode::Meeting => "You are an expert real-time interview co-pilot whispering direct answers to the candidate. Output ONLY the direct first-person answer the candidate should speak aloud right now (1 to 3 crisp, confident sentences maximum). Jump straight into the answer without preamble or echoing the question. Be ultra-precise, articulate, and punchy. No fluff, no essays, no over-explaining.",
-        AskMode::Coding => "You are an expert coding interview assistant. Provide a clean, accurate, and direct solution with code examples where relevant. Be precise and avoid unnecessary filler.",
+        AskMode::Meeting => MEETING_SYSTEM_PROMPT,
+        AskMode::Coding => CODING_SYSTEM_PROMPT,
+    };
+
+    let session_context = format_session_context();
+    let full_context = if context.trim().is_empty() {
+        session_context
+    } else {
+        format!("{}\n{}", context.trim(), session_context)
     };
 
     // 1. GEMINI (Fastest, ultra-low latency)
@@ -210,7 +293,7 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
         if let Ok(key) = get_entry(GEMINI_ACCOUNT)?.get_password() {
             if !key.trim().is_empty() {
                 let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", key.trim());
-                let prompt = format!("{}\n\nContext:\n{}\n\nQuestion:\n{}", system_prompt, context.trim(), question);
+                let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
                 let res = client.post(&url).json(&json!({
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1024}
@@ -220,6 +303,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     if response.status().is_success() {
                         if let Ok(body) = response.json::<GeminiResponse>().await {
                             if let Some(text) = body.candidates.unwrap_or_default().into_iter().flat_map(|c| c.content).flat_map(|co| co.parts.unwrap_or_default()).filter_map(|p| p.text).find(|t| !t.trim().is_empty()) {
+                                add_session_dialogue("Interviewer", question);
+                                add_session_dialogue("Candidate", &text);
                                 return Ok(text);
                             }
                         }
@@ -237,7 +322,7 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     "model": "arize-ai/qwen-2-1.5b-instruct",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": format!("Context:\n{}\n\nQuestion:\n{}", context.trim(), question)}
+                        {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
                     ],
                     "temperature": 0.3,
                     "max_tokens": 1024
@@ -247,6 +332,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     if response.status().is_success() {
                         if let Ok(body) = response.json::<Completion>().await {
                             if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                                add_session_dialogue("Interviewer", question);
+                                add_session_dialogue("Candidate", &text);
                                 return Ok(text);
                             }
                         }
@@ -264,7 +351,7 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     "model": "rax-4.0",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": format!("Context:\n{}\n\nQuestion:\n{}", context.trim(), question)}
+                        {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
                     ],
                     "temperature": 0.3,
                     "max_tokens": 1024
@@ -274,6 +361,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     if response.status().is_success() {
                         if let Ok(body) = response.json::<Completion>().await {
                             if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                                add_session_dialogue("Interviewer", question);
+                                add_session_dialogue("Candidate", &text);
                                 return Ok(text);
                             }
                         }
@@ -290,7 +379,7 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
     if active == "meta" {
         if let Ok(key) = get_entry(META_ACCOUNT)?.get_password() {
             if !key.trim().is_empty() {
-                let prompt = format!("{}\n\nContext:\n{}\n\nQuestion:\n{}", system_prompt, context.trim(), question);
+                let prompt = format!("{}\n\nContext:\n{}\n\nInterviewer Question:\n{}", system_prompt, full_context.trim(), question);
                 let res = client.post("https://api.meta.ai/v1/responses").bearer_auth(key.trim()).json(&json!({
                     "model": "muse-spark-1.3-contributor",
                     "max_output_tokens": 1024,
@@ -305,6 +394,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                     if response.status().is_success() {
                         if let Ok(body) = response.json::<ResponsesReply>().await {
                             if let Some(text) = body.output.unwrap_or_default().into_iter().flat_map(|o| o.content.unwrap_or_default()).filter_map(|c| c.text).find(|t| !t.trim().is_empty()) {
+                                add_session_dialogue("Interviewer", question);
+                                add_session_dialogue("Candidate", &text);
                                 return Ok(text);
                             }
                         }
@@ -321,7 +412,7 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                 "model": "poolside/laguna-xs-2.1",
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": format!("Context:\n{}\n\nQuestion:\n{}", context.trim(), question)}
+                    {"role": "user", "content": format!("Context:\n{}\n\nInterviewer Question:\n{}", full_context.trim(), question)}
                 ],
                 "temperature": 0.3,
                 "max_tokens": 1024
@@ -331,6 +422,8 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
                 if response.status().is_success() {
                     if let Ok(body) = response.json::<Completion>().await {
                         if let Some(text) = body.choices.into_iter().next().and_then(|c| c.message.content).filter(|s| !s.trim().is_empty()) {
+                            add_session_dialogue("Interviewer", question);
+                            add_session_dialogue("Candidate", &text);
                             return Ok(text);
                         }
                     }
@@ -342,4 +435,53 @@ pub async fn ask_nvidia(question: String, context: String, mode: AskMode) -> Res
     Err(format!("Selected provider ({}) failed or key not configured in Settings.", active))
 }
 
-#[cfg(test)] mod tests { use super::*; #[test] fn provider_errors_are_clear_and_do_not_include_payloads() { assert!(status_error(401).contains("key")); assert!(status_error(429).contains("rate limit")); assert!(status_error(503).contains("temporarily unavailable")); } #[test] fn validates_assistant_mode() { assert!(matches!(serde_json::from_str::<AskMode>("\"meeting\""), Ok(AskMode::Meeting))); assert!(matches!(serde_json::from_str::<AskMode>("\"coding\""), Ok(AskMode::Coding))); assert!(serde_json::from_str::<AskMode>("\"other\"").is_err()); } #[test] #[ignore = "requires a saved NVIDIA key and sends a synthetic prompt"] fn live_connection() { let result = tauri::async_runtime::block_on(ask_nvidia("What is two plus two?".into(), String::new(), AskMode::Meeting)); assert!(result.is_ok(), "Synthetic connection test failed: {}", result.err().unwrap_or_default()); } }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_errors_are_clear_and_do_not_include_payloads() {
+        assert!(status_error(401).contains("key"));
+        assert!(status_error(429).contains("rate limit"));
+        assert!(status_error(503).contains("temporarily unavailable"));
+    }
+
+    #[test]
+    fn validates_assistant_mode() {
+        assert!(matches!(serde_json::from_str::<AskMode>("\"meeting\""), Ok(AskMode::Meeting)));
+        assert!(matches!(serde_json::from_str::<AskMode>("\"coding\""), Ok(AskMode::Coding)));
+        assert!(serde_json::from_str::<AskMode>("\"other\"").is_err());
+    }
+
+    #[test]
+    fn session_dialogue_records_and_formats_memory() {
+        clear_session_memory().unwrap();
+        assert_eq!(format_session_context(), "");
+
+        add_session_dialogue("Interviewer", "How do you handle state management?");
+        add_session_dialogue("Candidate", "I generally lean towards Zustand for minimal boilerplate.");
+
+        let context = format_session_context();
+        assert!(context.contains("Recent Interview History & Dialogue Memory"));
+        assert!(context.contains("Interviewer: How do you handle state management?"));
+        assert!(context.contains("Candidate: I generally lean towards Zustand for minimal boilerplate."));
+    }
+
+    #[test]
+    fn session_dialogue_caps_at_ten_turns() {
+        clear_session_memory().unwrap();
+        for i in 1..=15 {
+            add_session_dialogue("Turn", &format!("Question {i}"));
+        }
+        let context = format_session_context();
+        assert!(!context.contains("Question 1\n"));
+        assert!(context.contains("Question 15"));
+    }
+
+    #[test]
+    #[ignore = "requires a saved NVIDIA key and sends a synthetic prompt"]
+    fn live_connection() {
+        let result = tauri::async_runtime::block_on(ask_nvidia("What is two plus two?".into(), String::new(), AskMode::Meeting));
+        assert!(result.is_ok(), "Synthetic connection test failed: {}", result.err().unwrap_or_default());
+    }
+}

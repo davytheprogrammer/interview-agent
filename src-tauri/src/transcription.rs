@@ -96,16 +96,7 @@ fn next_turn(state: &mut Inner) -> Option<(String, String)> {
  Some((text, context))
 }
 fn meeting_question(text: &str) -> String {
-    format!(
-        "You are an expert real-time interview co-pilot whispering direct answers to the candidate. \
-        The speech below was just spoken by the interviewer. \
-        Provide an ultra-concise, precise, and confident response (1 to 3 crisp sentences maximum) that the candidate can speak aloud right now. \
-        Be direct and punchy: give the exact core answer first. \
-        Do NOT over-explain, do NOT ramble, and do NOT add unnecessary background theory or filler unless specifically asked. \
-        Do NOT repeat or paraphrase the question. Jump straight into the answer. \
-        Sound like an articulate, senior professional speaking naturally, not an AI essayist.\n\n\
-        Speech heard: \"{text}\""
-    )
+    format!("Speech heard: \"{text}\"")
 }
 
 fn schedule_answer(shared: Arc<Mutex<Inner>>, app: AppHandle) {
